@@ -110,11 +110,28 @@ async function navigateAndAcceptDisclaimer(page: Page): Promise<void> {
 
   if (siteKey) {
     log.info(`reCAPTCHA found (sitekey: ${siteKey.substring(0, 10)}...), solving via 2Captcha...`);
-    const result = await solveCaptcha(siteKey, scraperConfig.startUrl);
 
-    // Inject the solved token into the page
-    await page.evaluate(getCaptchaInjectionScript(result.token));
-    log.success(`CAPTCHA solved (cost: $${result.costUsd})`);
+    // Try solving the CAPTCHA up to 2 times (2Captcha uses real humans, can be slow)
+    let solved = false;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        if (attempt > 1) log.info(`CAPTCHA retry attempt ${attempt}...`);
+        const result = await solveCaptcha(siteKey, scraperConfig.startUrl);
+
+        // Inject the solved token into the page
+        await page.evaluate(getCaptchaInjectionScript(result.token));
+        log.success(`CAPTCHA solved on attempt ${attempt} (cost: $${result.costUsd})`);
+        solved = true;
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn(`CAPTCHA attempt ${attempt} failed: ${msg}`);
+        if (attempt === 2) throw err;
+        log.info('Waiting 5 seconds before retrying...');
+        await delay(5000);
+      }
+    }
+
     await delay(2000); // Let the page process the token
   } else {
     log.warn('No reCAPTCHA sitekey found — may not be present or page structure changed');

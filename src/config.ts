@@ -57,7 +57,7 @@ export const captcha = {
   submitUrl: 'https://2captcha.com/in.php',
   resultUrl: 'https://2captcha.com/res.php',
   pollIntervalMs: 5_000,
-  maxWaitMs: 90_000,
+  maxWaitMs: 180_000, // 3 minutes — 2Captcha uses real humans, solve times vary
 };
 
 // ---------------------------------------------------------------------------
