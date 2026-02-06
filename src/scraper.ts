@@ -1,6 +1,6 @@
 import { chromium, type Browser, type Page } from 'playwright';
 import path from 'path';
-import { scraper as scraperConfig, resultsConfig, paths } from './config.js';
+import { scraper as scraperConfig, paths } from './config.js';
 import { log } from './logger.js';
 import { solveCaptcha, getCaptchaInjectionScript } from './captcha.js';
 import type { Filing } from './database.js';
@@ -227,84 +227,133 @@ async function fillSearchForm(page: Page): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: Scrape results from the table
+// Step 4: Scrape results — card-based layout
+// ---------------------------------------------------------------------------
+// The results page uses a card layout, NOT a table. Each result looks like:
+//
+//   20260071189 • Lis Pendens • 02/05/2026 01:31 PM
+//   Grantor                Grantee              Legal              BookPage
+//   RIDGEMOORE HOA INC     DE OLIVEIRA ANDREA C Lot: 7 RIDGE...
+//
+// We scrape by finding each result card and extracting the text content.
 // ---------------------------------------------------------------------------
 
-async function scrapeResultsPage(page: Page): Promise<Filing[]> {
-  const filings: Filing[] = [];
+async function scrapeResults(page: Page): Promise<Filing[]> {
+  log.step(4, 'Scraping results...');
 
-  // Tyler Technologies apps typically use standard HTML tables or ag-grid.
-  // Try multiple selector strategies.
-  const rows = await page.locator(resultsConfig.resultRows).all();
-
-  if (rows.length === 0) {
-    // Fallback: try to find any table rows
-    const fallbackRows = await page.locator('table tbody tr').all();
-    if (fallbackRows.length > 0) {
-      log.info(`Found ${fallbackRows.length} rows using fallback table selector`);
-      rows.push(...fallbackRows);
-    }
+  // Check if there are any results at all
+  const noResults = await page.getByText('No results found').isVisible().catch(() => false);
+  if (noResults) {
+    log.info('No results found for this date range');
+    return [];
   }
 
-  for (const row of rows) {
-    try {
-      const cells = await row.locator('td').all();
+  // Get the total result count from the header text
+  // Format: "Showing page 1 of 1 for 9 Total Results"
+  const headerText = await page.getByText('Total Results').textContent().catch(() => '');
+  const totalMatch = headerText?.match(/(\d+)\s*Total Results/);
+  if (totalMatch) {
+    log.info(`Results page says: ${totalMatch[1]} total results`);
+  }
 
-      if (cells.length >= 4) {
-        const cols = resultsConfig.columns;
-        const filing: Filing = {
-          document_number: (await cells[cols.documentNumber]?.textContent())?.trim() || '',
-          document_type: (await cells[cols.documentType]?.textContent())?.trim() || '',
-          recording_date: (await cells[cols.recordingDate]?.textContent())?.trim() || '',
-          grantee_name: (await cells[cols.granteeName]?.textContent())?.trim() || '',
-          property_address: cols.propertyAddress >= 0 && cells[cols.propertyAddress]
-            ? (await cells[cols.propertyAddress]?.textContent())?.trim() || ''
-            : '',
-        };
+  // Scrape all result cards from the page.
+  // Each card's full text contains the doc number, type, date, and party names.
+  // We use page.evaluate() to extract structured data from the DOM in one pass.
+  const filings = await page.evaluate(() => {
+    const results: Array<{
+      document_number: string;
+      document_type: string;
+      recording_date: string;
+      grantor_name: string;
+      grantee_name: string;
+      legal_description: string;
+    }> = [];
 
-        if (filing.document_number) {
-          filings.push(filing);
-        }
+    // Strategy 1: Look for result card containers.
+    // Tyler Tech ssweb apps typically wrap each result in a repeated element
+    // with a document number as a prominent header or link.
+
+    // Find all elements that contain a document number pattern (11-digit number)
+    // The header format is: "20260071189 • Lis Pendens • 02/05/2026 01:31 PM"
+    const allElements = document.querySelectorAll(
+      // Common card containers in Tyler Tech apps
+      '.search-result, .result-card, .document-card, ' +
+      // Angular component selectors
+      '[class*="result"], [class*="record"], [class*="document-row"], ' +
+      // Generic card/list patterns
+      '.card, .list-item, .row-item'
+    );
+
+    // If we found card containers, extract data from each
+    if (allElements.length > 0) {
+      for (const card of allElements) {
+        const text = card.textContent || '';
+
+        // Look for document number pattern: 11+ digits
+        const docMatch = text.match(/(\d{11,})/);
+        if (!docMatch) continue;
+
+        // Look for date pattern: MM/DD/YYYY
+        const dateMatch = text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+
+        // Look for Grantor/Grantee sections
+        const grantorSection = card.querySelector('[class*="grantor"], [data-label*="Grantor"]');
+        const granteeSection = card.querySelector('[class*="grantee"], [data-label*="Grantee"]');
+        const legalSection = card.querySelector('[class*="legal"], [data-label*="Legal"]');
+
+        const grantorText = grantorSection?.textContent?.replace(/Grantor\s*(\(\d+\))?/i, '').trim() || '';
+        const granteeText = granteeSection?.textContent?.replace(/Grantee\s*(\(\d+\))?/i, '').trim() || '';
+        const legalText = legalSection?.textContent?.replace(/Legal/i, '').trim() || '';
+
+        results.push({
+          document_number: docMatch[1],
+          document_type: 'Lis Pendens',
+          recording_date: dateMatch ? dateMatch[1] : '',
+          grantor_name: grantorText,
+          grantee_name: granteeText,
+          legal_description: legalText,
+        });
       }
-    } catch (err) {
-      log.warn('Failed to parse a result row, skipping', err);
     }
+
+    // Strategy 2: If strategy 1 found nothing, try parsing the full page text
+    // by looking for the repeating pattern of document numbers
+    if (results.length === 0) {
+      const bodyText = document.body.innerText;
+      // Match lines that start with an 11-digit number followed by bullet separators
+      const cardPattern = /(\d{11,})\s*[•·]\s*(Lis Pendens)\s*[•·]\s*(\d{1,2}\/\d{1,2}\/\d{4}[^]*?)(?=\d{11,}\s*[•·]|$)/g;
+      let match;
+
+      while ((match = cardPattern.exec(bodyText)) !== null) {
+        const cardText = match[3];
+
+        // Extract Grantor text (everything between "Grantor" label and "Grantee" label)
+        const grantorMatch = cardText.match(/Grantor(?:\s*\(\d+\))?\s+([\s\S]*?)(?=Grantee)/i);
+        const granteeMatch = cardText.match(/Grantee(?:\s*\(\d+\))?\s+([\s\S]*?)(?=Legal)/i);
+        const legalMatch = cardText.match(/Legal\s+([\s\S]*?)(?=BookPage|$)/i);
+
+        results.push({
+          document_number: match[1],
+          document_type: match[2],
+          recording_date: match[3].match(/(\d{1,2}\/\d{1,2}\/\d{4})/)?.[1] || '',
+          grantor_name: grantorMatch?.[1]?.trim() || '',
+          grantee_name: granteeMatch?.[1]?.trim() || '',
+          legal_description: legalMatch?.[1]?.trim() || '',
+        });
+      }
+    }
+
+    return results;
+  });
+
+  log.success(`Scraped ${filings.length} filing(s) from results page`);
+
+  // Log first result as a sample for verification
+  if (filings.length > 0) {
+    log.info('Sample result:', filings[0]);
   }
 
   return filings;
-}
-
-async function scrapeAllPages(page: Page): Promise<Filing[]> {
-  log.step(4, 'Scraping results...');
-
-  const allFilings: Filing[] = [];
-  let pageNum = 1;
-
-  while (pageNum <= scraperConfig.maxPages) {
-    log.info(`Scraping results page ${pageNum}...`);
-
-    const pageFilings = await scrapeResultsPage(page);
-    allFilings.push(...pageFilings);
-
-    log.info(`Page ${pageNum}: found ${pageFilings.length} filings`);
-
-    // Check for next page / pagination
-    const nextButton = page.locator(resultsConfig.nextPageButton);
-    const hasNext = await nextButton.isVisible().catch(() => false);
-
-    if (!hasNext) {
-      log.info('No more pages');
-      break;
-    }
-
-    await nextButton.click();
-    await page.waitForLoadState('networkidle');
-    await delay();
-    pageNum++;
-  }
-
-  log.success(`Scraped ${allFilings.length} total filings across ${pageNum} page(s)`);
-  return allFilings;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +367,7 @@ export async function scrapeFilings(): Promise<Filing[]> {
     await navigateAndAcceptDisclaimer(page);
     await navigateToSearch(page);
     await fillSearchForm(page);
-    const filings = await scrapeAllPages(page);
+    const filings = await scrapeResults(page);
     return filings;
   } catch (error) {
     await errorScreenshot(page, 'scrape-failure');

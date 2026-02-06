@@ -6,12 +6,14 @@ import { log } from './logger.js';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+/** A single Lis Pendens filing as scraped from the county website */
 export interface Filing {
   document_number: string;
   document_type: string;
   recording_date: string;
-  grantee_name: string;
-  property_address: string;
+  grantor_name: string;      // Who filed (usually a bank, lender, or HOA)
+  grantee_name: string;      // The property owner(s) — this is the lead
+  legal_description: string; // Property info like "Lot: 7 RIDGEMOORE PHASE ONE"
 }
 
 export interface EnrichedFiling extends Filing {
@@ -49,18 +51,19 @@ export function initDatabase(): void {
   // Create tables
   db.exec(`
     CREATE TABLE IF NOT EXISTS filings (
-      document_number TEXT PRIMARY KEY,
-      document_type   TEXT NOT NULL,
-      recording_date  TEXT NOT NULL,
-      grantee_name    TEXT NOT NULL,
-      property_address TEXT DEFAULT '',
-      phones          TEXT DEFAULT '[]',
-      emails          TEXT DEFAULT '[]',
-      mailing_address TEXT DEFAULT '',
+      document_number   TEXT PRIMARY KEY,
+      document_type     TEXT NOT NULL,
+      recording_date    TEXT NOT NULL,
+      grantor_name      TEXT DEFAULT '',
+      grantee_name      TEXT NOT NULL,
+      legal_description TEXT DEFAULT '',
+      phones            TEXT DEFAULT '[]',
+      emails            TEXT DEFAULT '[]',
+      mailing_address   TEXT DEFAULT '',
       skip_trace_status TEXT DEFAULT 'pending',
-      crm_status      TEXT DEFAULT 'pending',
-      created_at      TEXT DEFAULT (datetime('now')),
-      updated_at      TEXT DEFAULT (datetime('now'))
+      crm_status        TEXT DEFAULT 'pending',
+      created_at        TEXT DEFAULT (datetime('now')),
+      updated_at        TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS run_log (
@@ -92,8 +95,10 @@ export function filingExists(documentNumber: string): boolean {
 /** Insert new filings, skipping any that already exist. Returns only the NEW ones. */
 export function insertNewFilings(filings: Filing[]): Filing[] {
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO filings (document_number, document_type, recording_date, grantee_name, property_address)
-    VALUES (@document_number, @document_type, @recording_date, @grantee_name, @property_address)
+    INSERT OR IGNORE INTO filings
+      (document_number, document_type, recording_date, grantor_name, grantee_name, legal_description)
+    VALUES
+      (@document_number, @document_type, @recording_date, @grantor_name, @grantee_name, @legal_description)
   `);
 
   const newFilings: Filing[] = [];

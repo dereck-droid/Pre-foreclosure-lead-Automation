@@ -104,22 +104,27 @@ async function pollForResult(captchaId: string): Promise<string> {
  * Call this with the Playwright page object after solving.
  */
 export function getCaptchaInjectionScript(token: string): string {
+  // The Orange County site uses:
+  //   data-sitekey="6LemVGAUAAAAAB_iW1wbaE4_s0Z5SoSakm6GI8St"
+  //   data-callback="onReturnRecaptchaCallback"
+  //   textarea name="g-recaptcha-response"
   return `
-    // Set the reCAPTCHA response textarea
-    const textarea = document.querySelector('#g-recaptcha-response')
-      || document.querySelector('[name="g-recaptcha-response"]');
-    if (textarea) {
-      textarea.value = '${token}';
-      textarea.style.display = 'block'; // Some forms hide it
+    // Set the reCAPTCHA response textarea(s)
+    document.querySelectorAll('[name="g-recaptcha-response"], #g-recaptcha-response-1').forEach(el => {
+      el.value = '${token}';
+    });
+
+    // Call the site's registered callback function
+    if (typeof onReturnRecaptchaCallback === 'function') {
+      onReturnRecaptchaCallback('${token}');
     }
 
-    // If there's a callback function registered, call it
+    // Fallback: try the generic grecaptcha callback approach
     if (typeof ___grecaptcha_cfg !== 'undefined') {
       const clients = ___grecaptcha_cfg.clients;
       if (clients) {
         Object.keys(clients).forEach(key => {
           const client = clients[key];
-          // Find the callback in the client configuration
           const findCallback = (obj) => {
             if (!obj || typeof obj !== 'object') return null;
             for (const k of Object.keys(obj)) {

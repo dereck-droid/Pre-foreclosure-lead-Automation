@@ -26,8 +26,9 @@ async function pushToWebhook(filing: EnrichedFiling): Promise<CrmPushResult> {
   }
 
   const payload = {
-    name: filing.grantee_name,
-    property_address: filing.property_address,
+    grantee_name: filing.grantee_name,
+    grantor_name: filing.grantor_name,
+    legal_description: filing.legal_description,
     document_number: filing.document_number,
     document_type: filing.document_type,
     recording_date: filing.recording_date,

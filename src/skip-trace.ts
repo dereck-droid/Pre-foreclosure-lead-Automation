@@ -92,7 +92,9 @@ async function callTracerfy(
 /** Skip trace a single filing and update the database */
 export async function skipTraceFiling(filing: Filing): Promise<SkipTraceResult> {
   try {
-    const result = await callTracerfy(filing.grantee_name, filing.property_address);
+    // Use grantee name (the lead) and legal description for lookup
+    // The legal description has property info like "Lot: 7 RIDGEMOORE PHASE ONE"
+    const result = await callTracerfy(filing.grantee_name, filing.legal_description);
 
     updateSkipTrace(
       filing.document_number,

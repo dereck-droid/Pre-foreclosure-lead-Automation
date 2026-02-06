@@ -50,31 +50,6 @@ export const scraper = {
 };
 
 // ---------------------------------------------------------------------------
-// Results table configuration
-// ---------------------------------------------------------------------------
-// These will be updated after seeing the results page screenshot.
-// For now, they're best guesses based on typical Tyler Technologies layouts.
-// ---------------------------------------------------------------------------
-export const resultsConfig = {
-  // Selector for each data row in the results table
-  // Tyler Tech apps typically use a table or ag-grid
-  resultRows: 'table tbody tr, .ag-row, .search-result-row',
-
-  // Selector for the next page / pagination button
-  nextPageButton: 'button:has-text("Next"), a:has-text("Next"), .pagination-next',
-
-  // Column mapping — which column index (0-based) has which data
-  // UPDATE THESE after seeing the results page
-  columns: {
-    documentNumber: 0,
-    documentType: 1,
-    recordingDate: 2,
-    granteeName: 3,
-    propertyAddress: 4, // may not exist — set to -1 if no address column
-  },
-};
-
-// ---------------------------------------------------------------------------
 // 2Captcha
 // ---------------------------------------------------------------------------
 export const captcha = {
