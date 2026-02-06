@@ -1,0 +1,25 @@
+{
+  "name": "oc-lis-pendens-scraper",
+  "version": "1.0.0",
+  "description": "Automated Orange County Lis Pendens scraper with skip tracing and CRM integration",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "schedule": "tsx src/scheduler.ts",
+    "test-browser": "tsx src/test-browser.ts",
+    "db:reset": "rm -f data/scraper.db && echo 'Database deleted. It will be recreated on next run.'"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7",
+    "node-cron": "^3.0.3",
+    "playwright": "^1.49.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.0",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
