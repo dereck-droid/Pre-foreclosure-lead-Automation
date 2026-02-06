@@ -80,10 +80,26 @@ async function navigateAndAcceptDisclaimer(page: Page): Promise<void> {
   log.step(1, 'Navigating to Orange County Comptroller portal...');
 
   await page.goto(scraperConfig.startUrl, { waitUntil: 'networkidle' });
+  await delay(2000); // Let the page fully settle
   await screenshot(page, '01-disclaimer-page');
 
   // --- Solve reCAPTCHA v2 checkbox ---
-  log.step(1, 'Looking for reCAPTCHA...');
+  log.step(1, 'Waiting for reCAPTCHA to load...');
+
+  // The reCAPTCHA widget takes a few seconds to load after the page.
+  // Wait for the iframe to appear, which signals the widget is ready.
+  try {
+    await page.waitForSelector(
+      'iframe[src*="recaptcha"], [data-sitekey], .g-recaptcha',
+      { timeout: 15_000 }
+    );
+    log.info('reCAPTCHA widget detected on page');
+  } catch {
+    log.warn('reCAPTCHA iframe not found after 15s — may not be present');
+  }
+
+  // Extra wait for the reCAPTCHA to fully initialize its JavaScript
+  await delay(3000);
 
   // The site has a reCAPTCHA v2 "I'm not a robot" checkbox.
   // We find the sitekey from the page and send it to 2Captcha.
@@ -93,13 +109,13 @@ async function navigateAndAcceptDisclaimer(page: Page): Promise<void> {
   });
 
   if (siteKey) {
-    log.info('reCAPTCHA found, solving via 2Captcha...');
+    log.info(`reCAPTCHA found (sitekey: ${siteKey.substring(0, 10)}...), solving via 2Captcha...`);
     const result = await solveCaptcha(siteKey, scraperConfig.startUrl);
 
     // Inject the solved token into the page
     await page.evaluate(getCaptchaInjectionScript(result.token));
     log.success(`CAPTCHA solved (cost: $${result.costUsd})`);
-    await delay();
+    await delay(2000); // Let the page process the token
   } else {
     log.warn('No reCAPTCHA sitekey found — may not be present or page structure changed');
   }
@@ -107,11 +123,14 @@ async function navigateAndAcceptDisclaimer(page: Page): Promise<void> {
   // --- Click "I Accept" button ---
   log.step(1, 'Clicking "I Accept" button...');
 
-  // From screenshot: it's a clear button with text "I Accept"
-  await page.getByRole('button', { name: 'I Accept' }).click();
+  // Wait for the button to be enabled (it's disabled until CAPTCHA is solved)
+  const acceptButton = page.getByRole('button', { name: 'I Accept' });
+  await acceptButton.waitFor({ state: 'visible', timeout: 10_000 });
+  await delay(1000); // Brief pause like a human would
+  await acceptButton.click();
   await page.waitForLoadState('networkidle');
+  await delay(2000); // Let the next page fully load
   await screenshot(page, '02-after-accept');
-  await delay();
 
   log.success('Disclaimer accepted');
 }
@@ -126,10 +145,18 @@ async function navigateToSearch(page: Page): Promise<void> {
   // From screenshot: the home page has card-style boxes. "Basic Official Records
   // Search" is the first blue card with subtitle "Search by Name, Date or Document Number".
   // The link URL is: ssweb/search/DOCSEARCH2950S1
+
+  // Wait for the home page content to fully render
+  await page.waitForSelector('text=Basic Official Records Search', { timeout: 15_000 });
+  await delay(1500);
+
   await page.getByText('Basic Official Records Search').click();
   await page.waitForLoadState('networkidle');
+  await delay(2000); // Let the search form fully render
+
+  // Wait for the search form to actually appear
+  await page.waitForSelector('input[placeholder="mm/dd/yyyy"]', { timeout: 15_000 });
   await screenshot(page, '03-search-page');
-  await delay();
 
   log.success('Search page loaded');
 }
@@ -165,12 +192,13 @@ async function fillSearchForm(page: Page): Promise<void> {
   const startDateContainer = startDateInput.locator('..');
   const startCalendarBtn = startDateContainer.locator('button').first();
   await startCalendarBtn.click();
-  await delay(1000);
+  await delay(2000); // Wait for date picker popup to fully animate in
 
   // The date picker popup appears with today's date pre-selected
   // Click "Set Date" to confirm
+  await page.getByText('Set Date').waitFor({ state: 'visible', timeout: 5000 });
   await page.getByText('Set Date').click();
-  await delay(500);
+  await delay(1500); // Let the popup close and value set
 
   log.info('Recording Date Start set');
 
@@ -180,11 +208,12 @@ async function fillSearchForm(page: Page): Promise<void> {
   const endDateContainer = endDateInput.locator('..');
   const endCalendarBtn = endDateContainer.locator('button').first();
   await endCalendarBtn.click();
-  await delay(1000);
+  await delay(2000); // Wait for date picker popup to fully animate in
 
   // Click "Set Date" again for the end date
+  await page.getByText('Set Date').waitFor({ state: 'visible', timeout: 5000 });
   await page.getByText('Set Date').click();
-  await delay(500);
+  await delay(1500); // Let the popup close and value set
 
   log.info('Recording Date End set');
 
@@ -196,13 +225,14 @@ async function fillSearchForm(page: Page): Promise<void> {
   // of all document types. When you type "lis" it filters to show "Lis Pendens".
   const docTypeField = page.locator('text=Document Types').locator('..').locator('input');
   await docTypeField.click();
-  await docTypeField.pressSequentially('lis', { delay: 100 });
-  await delay(1500);
+  await delay(1000); // Let the dropdown initialize
+  await docTypeField.pressSequentially('lis', { delay: 150 });
+  await delay(2000); // Wait for autocomplete/filter to process
 
   // From screenshot: the dropdown shows highlighted options, "Lis Pendens" is visible
   // Click the "Lis Pendens" option in the dropdown
   await page.locator('li, .option, [role="option"]').filter({ hasText: 'Lis Pendens' }).first().click();
-  await delay(500);
+  await delay(1000); // Let the tag/chip appear
 
   await screenshot(page, '04-form-filled');
 
@@ -220,7 +250,7 @@ async function fillSearchForm(page: Page): Promise<void> {
   // From screenshot: "Search" button with magnifying glass icon, bottom-right of form
   await page.getByRole('button', { name: 'Search' }).click();
   await page.waitForLoadState('networkidle');
-  await delay(2000);
+  await delay(3000); // Give results time to fully render
   await screenshot(page, '05-results');
 
   log.success('Search submitted');
