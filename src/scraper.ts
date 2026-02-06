@@ -168,52 +168,39 @@ async function navigateToSearch(page: Page): Promise<void> {
 async function fillSearchForm(page: Page): Promise<void> {
   log.step(3, 'Filling out search form...');
 
+  // --- Build today's date string in M/D/YYYY format ---
+  const today = new Date();
+  const dateString = `${today.getMonth() + 1}/${today.getDate()}/${today.getFullYear()}`;
+  log.info(`Searching for filings on: ${dateString}`);
+
   // --- Recording Date Start ---
-  // From screenshots: Click the calendar icon button next to "Recording Date Start"
-  // input. The popup defaults to today's date. Then click "Set Date".
-  log.info('Setting Recording Date Start to today...');
+  log.info('Setting Recording Date Start...');
 
-  // The calendar icons have a tooltip "Open Date Picker" on hover.
-  // There are two of them — first for start date, second for end date.
-  const datePickerButtons = page.locator(
-    'button[title="Open Date Picker"], button:has(mat-icon), button:has(.calendar-icon), ' +
-    'button:near(:text("Recording Date Start"), 200)'
-  );
-
-  // Try the approach: find the input with placeholder mm/dd/yyyy, then click
-  // the button immediately after it. There are exactly two such inputs.
+  // Type the date directly into the input field (simpler than the calendar picker)
   const dateInputs = page.locator('input[placeholder="mm/dd/yyyy"]');
   const startDateInput = dateInputs.nth(0);
   const endDateInput = dateInputs.nth(1);
 
-  // Strategy A: Click the calendar icon for start date and use the date picker
-  // The calendar button is the sibling/adjacent element to the input
-  // In Tyler Tech apps, it's typically the next button element after the input
-  const startDateContainer = startDateInput.locator('..');
-  const startCalendarBtn = startDateContainer.locator('button').first();
-  await startCalendarBtn.click();
-  await delay(2000); // Wait for date picker popup to fully animate in
-
-  // The date picker popup appears with today's date pre-selected
-  // Click "Set Date" to confirm
-  await page.getByText('Set Date').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByText('Set Date').click();
-  await delay(1500); // Let the popup close and value set
+  await startDateInput.click();
+  await delay(500);
+  // Triple-click to select any existing text, then type over it
+  await startDateInput.click({ clickCount: 3 });
+  await startDateInput.pressSequentially(dateString, { delay: 50 });
+  // Press Tab to move focus out and confirm the value
+  await startDateInput.press('Tab');
+  await delay(1000);
 
   log.info('Recording Date Start set');
 
   // --- Recording Date End ---
-  log.info('Setting Recording Date End to today...');
+  log.info('Setting Recording Date End...');
 
-  const endDateContainer = endDateInput.locator('..');
-  const endCalendarBtn = endDateContainer.locator('button').first();
-  await endCalendarBtn.click();
-  await delay(2000); // Wait for date picker popup to fully animate in
-
-  // Click "Set Date" again for the end date
-  await page.getByText('Set Date').waitFor({ state: 'visible', timeout: 5000 });
-  await page.getByText('Set Date').click();
-  await delay(1500); // Let the popup close and value set
+  await endDateInput.click();
+  await delay(500);
+  await endDateInput.click({ clickCount: 3 });
+  await endDateInput.pressSequentially(dateString, { delay: 50 });
+  await endDateInput.press('Tab');
+  await delay(1000);
 
   log.info('Recording Date End set');
 
