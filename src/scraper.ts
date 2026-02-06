@@ -227,7 +227,9 @@ async function fillSearchForm(page: Page): Promise<void> {
   // From screenshots: the Document Types field is a searchable input.
   // It has a magnifying glass icon and when you click it shows a dropdown
   // of all document types. When you type "lis" it filters to show "Lis Pendens".
-  const docTypeField = page.locator('text=Document Types').locator('..').locator('input');
+  // The error log revealed the exact selector: getByRole('textbox', { name: 'Document Types' })
+  // This targets the visible text input (id="field_selfservice_documentTypes"), not the hidden one.
+  const docTypeField = page.getByRole('textbox', { name: 'Document Types' });
   await docTypeField.click();
   await delay(1000); // Let the dropdown initialize
   await docTypeField.pressSequentially('lis', { delay: 150 });
