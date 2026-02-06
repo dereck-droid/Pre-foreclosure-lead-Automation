@@ -8,18 +8,6 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 // ---------------------------------------------------------------------------
 // Environment helpers
 // ---------------------------------------------------------------------------
-function requireEnv(key: string): string {
-  const value = process.env[key];
-  if (!value) {
-    throw new Error(
-      `Missing required environment variable: ${key}\n` +
-      `Make sure you have a .env file in the project root.\n` +
-      `See .env.example for reference.`
-    );
-  }
-  return value;
-}
-
 function optionalEnv(key: string, fallback: string = ''): string {
   return process.env[key] || fallback;
 }
@@ -42,6 +30,12 @@ export const scraper = {
   /** The starting URL for the Orange County comptroller portal */
   startUrl: 'https://selfservice.or.occompt.com/ssweb/user/disclaimer',
 
+  /** The home page URL (after accepting disclaimer) */
+  homeUrl: 'https://selfservice.or.occompt.com/ssweb/',
+
+  /** The search form URL */
+  searchUrl: 'https://selfservice.or.occompt.com/ssweb/search/DOCSEARCH2950S1',
+
   /** Run browser with visible window (true) or hidden (false) */
   headless: optionalEnv('HEADLESS', 'false') === 'true',
 
@@ -56,41 +50,27 @@ export const scraper = {
 };
 
 // ---------------------------------------------------------------------------
-// CSS Selectors — UPDATE THESE after inspecting the county website
+// Results table configuration
 // ---------------------------------------------------------------------------
-// These are placeholders. You MUST replace them with real selectors from the
-// Orange County Comptroller's website. See SITE_INSPECTION_GUIDE.md for
-// step-by-step instructions on how to find these.
+// These will be updated after seeing the results page screenshot.
+// For now, they're best guesses based on typical Tyler Technologies layouts.
 // ---------------------------------------------------------------------------
-export const selectors = {
-  // Step 1: Disclaimer / CAPTCHA page
-  recaptcha: '[TODO] .g-recaptcha, #recaptcha, iframe[src*="recaptcha"]',
-  recaptchaSiteKey: '[TODO] data-sitekey attribute from the reCAPTCHA div',
-  acceptButton: '[TODO] #acceptButton, button containing "I Accept"',
+export const resultsConfig = {
+  // Selector for each data row in the results table
+  // Tyler Tech apps typically use a table or ag-grid
+  resultRows: 'table tbody tr, .ag-row, .search-result-row',
 
-  // Step 2: Search type selection
-  basicSearchButton: '[TODO] button or link for "Basic Official Records Search"',
+  // Selector for the next page / pagination button
+  nextPageButton: 'button:has-text("Next"), a:has-text("Next"), .pagination-next',
 
-  // Step 3: Search form
-  startDateField: '[TODO] input for start date',
-  endDateField: '[TODO] input for end date',
-  setDateButton: '[TODO] button to confirm date selection',
-  documentTypeField: '[TODO] input or dropdown for document type',
-  documentTypeOption: '[TODO] dropdown option containing "LIS PENDENS"',
-  searchButton: '[TODO] button to submit the search',
-
-  // Step 4: Results
-  resultsTable: '[TODO] the results table element',
-  resultRows: '[TODO] selector for each data row in the table',
-  nextPageButton: '[TODO] button to go to next page of results',
-
-  // Column selectors within each row (adjust indices after inspection)
+  // Column mapping — which column index (0-based) has which data
+  // UPDATE THESE after seeing the results page
   columns: {
-    documentNumber: '[TODO] cell or element containing the document number',
-    documentType: '[TODO] cell or element containing the document type',
-    recordingDate: '[TODO] cell or element containing the recording date',
-    granteeName: '[TODO] cell or element containing the grantee/owner name',
-    propertyAddress: '[TODO] cell or element containing the property address',
+    documentNumber: 0,
+    documentType: 1,
+    recordingDate: 2,
+    granteeName: 3,
+    propertyAddress: 4, // may not exist — set to -1 if no address column
   },
 };
 
