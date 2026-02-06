@@ -61,44 +61,8 @@ export const captcha = {
 };
 
 // ---------------------------------------------------------------------------
-// Skip Tracing (Tracerfy)
+// HTTP Server (so n8n can trigger scrapes via HTTP Request)
 // ---------------------------------------------------------------------------
-export const skipTrace = {
-  apiKey: optionalEnv('TRACERFY_API_KEY'),
-  baseUrl: 'https://www.tracerfy.com/api',
-};
-
-// ---------------------------------------------------------------------------
-// CRM
-// ---------------------------------------------------------------------------
-export const crm = {
-  mode: optionalEnv('CRM_MODE', 'webhook') as 'webhook' | 'gohighlevel',
-  webhookUrl: optionalEnv('CRM_WEBHOOK_URL'),
-  ghl: {
-    apiKey: optionalEnv('GHL_API_KEY'),
-    locationId: optionalEnv('GHL_LOCATION_ID'),
-    baseUrl: 'https://services.leadconnectorhq.com',
-  },
-};
-
-// ---------------------------------------------------------------------------
-// Notifications
-// ---------------------------------------------------------------------------
-export const notifications = {
-  twilio: {
-    accountSid: optionalEnv('TWILIO_ACCOUNT_SID'),
-    authToken: optionalEnv('TWILIO_AUTH_TOKEN'),
-    fromNumber: optionalEnv('TWILIO_FROM_NUMBER'),
-  },
-  alertPhoneNumbers: optionalEnv('ALERT_PHONE_NUMBERS')
-    .split(',')
-    .map(n => n.trim())
-    .filter(Boolean),
-};
-
-// ---------------------------------------------------------------------------
-// Schedule
-// ---------------------------------------------------------------------------
-export const schedule = {
-  frequency: optionalEnv('CHECK_FREQUENCY', 'twice') as 'twice' | 'three',
+export const server = {
+  port: parseInt(optionalEnv('PORT', '3000'), 10),
 };

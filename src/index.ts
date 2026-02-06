@@ -1,34 +1,50 @@
 /**
  * ORANGE COUNTY LIS PENDENS SCRAPER
  *
- * Main entry point — runs a single scrape cycle:
+ * Core scrape function — runs a single scrape cycle:
  * 1. Opens the county website
  * 2. Solves CAPTCHA
- * 3. Searches for today's Lis Pendens filings
+ * 3. Searches for Lis Pendens filings (today or a specific date)
  * 4. Scrapes results
  * 5. Deduplicates against previous runs
- * 6. Skip traces new filings (gets phone numbers & emails)
- * 7. Pushes enriched leads to CRM
+ * 6. Returns only NEW filings as JSON (for n8n to process downstream)
  *
- * Usage: npm start
+ * Used by:
+ *   - server.ts (HTTP server — triggered by n8n)
+ *   - Can also be run directly: npm start
  */
 
-import { scrapeFilings, closeBrowser } from './scraper.js';
+import { scrapeFilings } from './scraper.js';
 import {
   initDatabase,
   closeDatabase,
   insertNewFilings,
-  getFilingsPendingCrm,
   startRun,
   completeRun,
   getConsecutiveFailures,
 } from './database.js';
-import { skipTraceFilings } from './skip-trace.js';
-import { pushFilingsToCrm } from './crm.js';
-import { alertOnFailure, alertOnSuccess } from './notifications.js';
+import type { Filing } from './database.js';
 import { log } from './logger.js';
 
-async function main(): Promise<void> {
+// ---------------------------------------------------------------------------
+// Result type — this is what n8n receives
+// ---------------------------------------------------------------------------
+export interface ScrapeResult {
+  success: boolean;
+  date_searched: string;
+  total_on_site: number;
+  new_filings: Filing[];
+  already_seen: number;
+  consecutive_failures: number;
+  duration_seconds: number;
+  error: string | null;
+  error_step: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Main scrape function — exported for server.ts
+// ---------------------------------------------------------------------------
+export async function runScraper(date?: string): Promise<ScrapeResult> {
   const overallStart = Date.now();
 
   log.info('='.repeat(60));
@@ -39,116 +55,135 @@ async function main(): Promise<void> {
   initDatabase();
   const runId = startRun();
 
-  const errors: string[] = [];
-  let totalScraped = 0;
-  let newFilingsCount = 0;
-
   try {
-    // -----------------------------------------------------------------------
-    // STEP 1: Scrape the county website
-    // -----------------------------------------------------------------------
+    // -------------------------------------------------------------------
+    // PHASE 1: Scrape the county website
+    // -------------------------------------------------------------------
     log.info('-'.repeat(40));
     log.info('PHASE 1: Scraping county website');
     log.info('-'.repeat(40));
 
-    const allFilings = await scrapeFilings();
-    totalScraped = allFilings.length;
+    const { filings: allFilings, date_searched } = await scrapeFilings(date);
+    const totalScraped = allFilings.length;
 
     if (allFilings.length === 0) {
-      log.info('No filings found for today. This may be normal (weekends, holidays).');
+      log.info('No filings found for this date. This may be normal (weekends, holidays).');
       completeRun(runId, 'success', 0, 0, []);
-      return;
+
+      const duration = (Date.now() - overallStart) / 1000;
+      return {
+        success: true,
+        date_searched,
+        total_on_site: 0,
+        new_filings: [],
+        already_seen: 0,
+        consecutive_failures: 0,
+        duration_seconds: Math.round(duration * 10) / 10,
+        error: null,
+        error_step: null,
+      };
     }
 
     log.info(`Found ${allFilings.length} total filing(s) on the county website`);
 
-    // -----------------------------------------------------------------------
-    // STEP 2: Deduplicate — only keep filings we haven't seen before
-    // -----------------------------------------------------------------------
+    // -------------------------------------------------------------------
+    // PHASE 2: Deduplicate — only keep filings we haven't seen before
+    // -------------------------------------------------------------------
     log.info('-'.repeat(40));
     log.info('PHASE 2: Deduplication');
     log.info('-'.repeat(40));
 
     const newFilings = insertNewFilings(allFilings);
-    newFilingsCount = newFilings.length;
+    const alreadySeen = totalScraped - newFilings.length;
 
     if (newFilings.length === 0) {
       log.info('All filings already in database — nothing new to process.');
-      completeRun(runId, 'success', totalScraped, 0, []);
-      return;
+    } else {
+      log.success(`${newFilings.length} NEW filing(s) to process`);
     }
 
-    log.success(`${newFilings.length} NEW filing(s) to process`);
-
-    // -----------------------------------------------------------------------
-    // STEP 3: Skip trace new filings (get phone numbers & emails)
-    // -----------------------------------------------------------------------
-    log.info('-'.repeat(40));
-    log.info('PHASE 3: Skip tracing');
-    log.info('-'.repeat(40));
-
-    const skipTraceResults = await skipTraceFilings(newFilings);
-
-    if (skipTraceResults.failed > 0) {
-      errors.push(`Skip trace failed for ${skipTraceResults.failed} filing(s)`);
-    }
-
-    // -----------------------------------------------------------------------
-    // STEP 4: Push enriched leads to CRM
-    // -----------------------------------------------------------------------
-    log.info('-'.repeat(40));
-    log.info('PHASE 4: Pushing to CRM');
-    log.info('-'.repeat(40));
-
-    const pendingCrm = getFilingsPendingCrm();
-    const crmResults = await pushFilingsToCrm(pendingCrm);
-
-    if (crmResults.failed > 0) {
-      errors.push(`CRM push failed for ${crmResults.failed} filing(s)`);
-    }
-
-    // -----------------------------------------------------------------------
+    // -------------------------------------------------------------------
     // Summary
-    // -----------------------------------------------------------------------
-    const duration = ((Date.now() - overallStart) / 1000).toFixed(1);
+    // -------------------------------------------------------------------
+    const duration = (Date.now() - overallStart) / 1000;
 
     log.info('='.repeat(60));
     log.success('RUN COMPLETE');
-    log.info(`  Total scraped:      ${totalScraped}`);
-    log.info(`  New filings:        ${newFilingsCount}`);
-    log.info(`  Skip traced:        ${skipTraceResults.successful} ok, ${skipTraceResults.failed} failed`);
-    log.info(`  CRM pushed:         ${crmResults.pushed} ok, ${crmResults.failed} failed`);
-    log.info(`  Skip trace cost:    $${skipTraceResults.totalCostUsd.toFixed(2)}`);
-    log.info(`  Duration:           ${duration} seconds`);
-    log.info(`  Errors:             ${errors.length > 0 ? errors.join('; ') : 'None'}`);
+    log.info(`  Date searched:      ${date_searched}`);
+    log.info(`  Total on site:      ${totalScraped}`);
+    log.info(`  New filings:        ${newFilings.length}`);
+    log.info(`  Already seen:       ${alreadySeen}`);
+    log.info(`  Duration:           ${duration.toFixed(1)} seconds`);
     log.info('='.repeat(60));
 
-    completeRun(runId, 'success', totalScraped, newFilingsCount, errors);
+    completeRun(runId, 'success', totalScraped, newFilings.length, []);
 
-    // Send success notification if there were new filings
-    await alertOnSuccess(newFilingsCount, totalScraped);
+    return {
+      success: true,
+      date_searched,
+      total_on_site: totalScraped,
+      new_filings: newFilings,
+      already_seen: alreadySeen,
+      consecutive_failures: 0,
+      duration_seconds: Math.round(duration * 10) / 10,
+      error: null,
+      error_step: null,
+    };
 
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
     log.error(`RUN FAILED: ${message}`);
-    errors.push(message);
 
-    completeRun(runId, 'failed', totalScraped, newFilingsCount, errors);
-
-    // Check how many times in a row we've failed
+    completeRun(runId, 'failed', 0, 0, [message]);
     const consecutiveFailures = getConsecutiveFailures();
-    await alertOnFailure(message, consecutiveFailures);
+    const duration = (Date.now() - overallStart) / 1000;
 
-    // Re-throw so the process exits with error code
-    throw error;
+    // Determine which step failed based on the error message
+    let errorStep = 'unknown';
+    if (message.includes('CAPTCHA') || message.includes('captcha') || message.includes('2captcha')) {
+      errorStep = 'captcha_solving';
+    } else if (message.includes('disclaimer') || message.includes('Accept')) {
+      errorStep = 'disclaimer_page';
+    } else if (message.includes('search') || message.includes('Search')) {
+      errorStep = 'search_form';
+    } else if (message.includes('result') || message.includes('scrape')) {
+      errorStep = 'results_scraping';
+    } else if (message.includes('browser') || message.includes('Browser') || message.includes('chromium')) {
+      errorStep = 'browser_launch';
+    } else if (message.includes('timeout') || message.includes('Timeout')) {
+      errorStep = 'timeout';
+    }
+
+    return {
+      success: false,
+      date_searched: date || new Date().toLocaleDateString('en-US'),
+      total_on_site: 0,
+      new_filings: [],
+      already_seen: 0,
+      consecutive_failures: consecutiveFailures,
+      duration_seconds: Math.round(duration * 10) / 10,
+      error: message,
+      error_step: errorStep,
+    };
   } finally {
-    await closeBrowser();
     closeDatabase();
   }
 }
 
-// Run it
-main().catch(error => {
-  log.error('Fatal error', error);
-  process.exit(1);
-});
+// ---------------------------------------------------------------------------
+// CLI entry point — allows running directly with: npm start
+// ---------------------------------------------------------------------------
+const isDirectRun = process.argv[1]?.includes('index');
+
+if (isDirectRun) {
+  const dateArg = process.argv[2]; // Optional: npm start -- "2/5/2026"
+  runScraper(dateArg).then(result => {
+    if (result.success) {
+      log.info(`Done. ${result.new_filings.length} new filing(s) found.`);
+    } else {
+      log.error(`Failed: ${result.error}`);
+      process.exit(1);
+    }
+  });
+}

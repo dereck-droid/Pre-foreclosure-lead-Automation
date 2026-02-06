@@ -16,14 +16,6 @@ export interface Filing {
   legal_description: string; // Property info like "Lot: 7 RIDGEMOORE PHASE ONE"
 }
 
-export interface EnrichedFiling extends Filing {
-  phones: string[];
-  emails: string[];
-  mailing_address: string;
-  skip_trace_status: 'pending' | 'success' | 'failed';
-  crm_status: 'pending' | 'pushed' | 'failed';
-}
-
 export interface RunLog {
   id?: number;
   started_at: string;
@@ -48,7 +40,7 @@ export function initDatabase(): void {
   // Enable WAL mode for better concurrent access
   db.pragma('journal_mode = WAL');
 
-  // Create tables
+  // Create tables — lean schema, no enrichment columns (n8n handles that)
   db.exec(`
     CREATE TABLE IF NOT EXISTS filings (
       document_number   TEXT PRIMARY KEY,
@@ -57,13 +49,7 @@ export function initDatabase(): void {
       grantor_name      TEXT DEFAULT '',
       grantee_name      TEXT NOT NULL,
       legal_description TEXT DEFAULT '',
-      phones            TEXT DEFAULT '[]',
-      emails            TEXT DEFAULT '[]',
-      mailing_address   TEXT DEFAULT '',
-      skip_trace_status TEXT DEFAULT 'pending',
-      crm_status        TEXT DEFAULT 'pending',
-      created_at        TEXT DEFAULT (datetime('now')),
-      updated_at        TEXT DEFAULT (datetime('now'))
+      created_at        TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS run_log (
@@ -83,14 +69,6 @@ export function initDatabase(): void {
 // ---------------------------------------------------------------------------
 // Filing operations
 // ---------------------------------------------------------------------------
-
-/** Check if a filing already exists in our database */
-export function filingExists(documentNumber: string): boolean {
-  const row = db.prepare(
-    'SELECT 1 FROM filings WHERE document_number = ?'
-  ).get(documentNumber);
-  return !!row;
-}
 
 /** Insert new filings, skipping any that already exist. Returns only the NEW ones. */
 export function insertNewFilings(filings: Filing[]): Filing[] {
@@ -114,67 +92,6 @@ export function insertNewFilings(filings: Filing[]): Filing[] {
 
   transaction(filings);
   return newFilings;
-}
-
-/** Update a filing with skip trace results */
-export function updateSkipTrace(
-  documentNumber: string,
-  phones: string[],
-  emails: string[],
-  mailingAddress: string,
-  status: 'success' | 'failed'
-): void {
-  db.prepare(`
-    UPDATE filings
-    SET phones = ?, emails = ?, mailing_address = ?, skip_trace_status = ?, updated_at = datetime('now')
-    WHERE document_number = ?
-  `).run(
-    JSON.stringify(phones),
-    JSON.stringify(emails),
-    mailingAddress,
-    status,
-    documentNumber
-  );
-}
-
-/** Mark a filing as pushed to CRM */
-export function updateCrmStatus(
-  documentNumber: string,
-  status: 'pushed' | 'failed'
-): void {
-  db.prepare(`
-    UPDATE filings SET crm_status = ?, updated_at = datetime('now') WHERE document_number = ?
-  `).run(status, documentNumber);
-}
-
-/** Get a filing with all enriched data */
-export function getFiling(documentNumber: string): EnrichedFiling | undefined {
-  const row = db.prepare('SELECT * FROM filings WHERE document_number = ?').get(documentNumber) as any;
-  if (!row) return undefined;
-  return {
-    ...row,
-    phones: JSON.parse(row.phones || '[]'),
-    emails: JSON.parse(row.emails || '[]'),
-  };
-}
-
-/** Get all filings that need skip tracing */
-export function getFilingsPendingSkipTrace(): Filing[] {
-  return db.prepare(
-    "SELECT * FROM filings WHERE skip_trace_status = 'pending'"
-  ).all() as Filing[];
-}
-
-/** Get all filings that need CRM push */
-export function getFilingsPendingCrm(): EnrichedFiling[] {
-  const rows = db.prepare(
-    "SELECT * FROM filings WHERE crm_status = 'pending' AND skip_trace_status IN ('success', 'failed')"
-  ).all() as any[];
-  return rows.map(row => ({
-    ...row,
-    phones: JSON.parse(row.phones || '[]'),
-    emails: JSON.parse(row.emails || '[]'),
-  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +140,23 @@ export function getConsecutiveFailures(): number {
     else break;
   }
   return count;
+}
+
+/** Get database stats for the /health endpoint */
+export function getStats(): {
+  total_filings: number;
+  total_runs: number;
+  last_successful_run: string | null;
+  consecutive_failures: number;
+} {
+  const filingCount = db.prepare('SELECT COUNT(*) as count FROM filings').get() as any;
+  const runCount = db.prepare('SELECT COUNT(*) as count FROM run_log').get() as any;
+  return {
+    total_filings: filingCount?.count || 0,
+    total_runs: runCount?.count || 0,
+    last_successful_run: getLastSuccessfulRun(),
+    consecutive_failures: getConsecutiveFailures(),
+  };
 }
 
 /** Close the database connection */

@@ -182,12 +182,18 @@ async function navigateToSearch(page: Page): Promise<void> {
 // Step 3: Fill out the search form
 // ---------------------------------------------------------------------------
 
-async function fillSearchForm(page: Page): Promise<void> {
+async function fillSearchForm(page: Page, date?: string): Promise<string> {
   log.step(3, 'Filling out search form...');
 
-  // --- Build today's date string in M/D/YYYY format ---
-  const today = new Date();
-  const dateString = `${today.getMonth() + 1}/${today.getDate()}/${today.getFullYear()}`;
+  // --- Build date string in M/D/YYYY format ---
+  // If a date was provided (e.g. from n8n), use it. Otherwise use today.
+  let dateString: string;
+  if (date) {
+    dateString = date;
+  } else {
+    const today = new Date();
+    dateString = `${today.getMonth() + 1}/${today.getDate()}/${today.getFullYear()}`;
+  }
   log.info(`Searching for filings on: ${dateString}`);
 
   // --- Recording Date Start ---
@@ -262,6 +268,7 @@ async function fillSearchForm(page: Page): Promise<void> {
   await screenshot(page, '05-results');
 
   log.success('Search submitted');
+  return dateString;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,15 +405,15 @@ async function scrapeResults(page: Page): Promise<Filing[]> {
 // Main scrape function — orchestrates the full flow
 // ---------------------------------------------------------------------------
 
-export async function scrapeFilings(): Promise<Filing[]> {
+export async function scrapeFilings(date?: string): Promise<{ filings: Filing[]; date_searched: string }> {
   const page = await launchBrowser();
 
   try {
     await navigateAndAcceptDisclaimer(page);
     await navigateToSearch(page);
-    await fillSearchForm(page);
+    const dateSearched = await fillSearchForm(page, date);
     const filings = await scrapeResults(page);
-    return filings;
+    return { filings, date_searched: dateSearched };
   } catch (error) {
     await errorScreenshot(page, 'scrape-failure');
     throw error;

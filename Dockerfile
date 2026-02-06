@@ -37,5 +37,8 @@ COPY tsconfig.json ./
 # Create data and screenshot directories
 RUN mkdir -p data screenshots errors
 
-# Default to running the scheduler
-CMD ["npx", "tsx", "src/scheduler.ts"]
+# Expose the HTTP server port
+EXPOSE 3000
+
+# Run the HTTP server (n8n triggers scrapes via POST /scrape)
+CMD ["npx", "tsx", "src/server.ts"]
