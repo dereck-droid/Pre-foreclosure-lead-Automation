@@ -6,12 +6,8 @@
         "rule": {
           "interval": [
             {
-              "field": "cronExpression",
-              "expression": "0 9 * * *"
-            },
-            {
-              "field": "cronExpression",
-              "expression": "0 14 * * *"
+              "field": "minutes",
+              "minutesInterval": 10
             }
           ]
         }
@@ -20,7 +16,7 @@
       "typeVersion": 1.2,
       "position": [0, 0],
       "id": "schedule-trigger",
-      "name": "9am + 2pm Daily"
+      "name": "Every 10 Minutes"
     },
     {
       "parameters": {
@@ -51,6 +47,41 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $now.hour }}",
+              "rightValue": 8,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "leftValue": "={{ $now.hour }}",
+              "rightValue": 17,
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [480, -60],
+      "id": "business-hours-check",
+      "name": "8am-6pm ET?"
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "http://your-server-ip:3000/scrape",
         "sendBody": false,
@@ -60,13 +91,13 @@
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [480, -60],
+      "position": [720, -120],
       "id": "scrape-request",
       "name": "Scrape County Website"
     }
   ],
   "connections": {
-    "9am + 2pm Daily": {
+    "Every 10 Minutes": {
       "main": [
         [
           {
@@ -78,6 +109,18 @@
       ]
     },
     "Is Weekday?": {
+      "main": [
+        [
+          {
+            "node": "8am-6pm ET?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "8am-6pm ET?": {
       "main": [
         [
           {
