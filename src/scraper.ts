@@ -235,9 +235,11 @@ async function fillSearchForm(page: Page): Promise<void> {
   await docTypeField.pressSequentially('lis', { delay: 150 });
   await delay(2000); // Wait for autocomplete/filter to process
 
-  // From screenshot: the dropdown shows highlighted options, "Lis Pendens" is visible
-  // Click the "Lis Pendens" option in the dropdown
-  await page.locator('li, .option, [role="option"]').filter({ hasText: 'Lis Pendens' }).first().click();
+  // From screenshot: the dropdown shows two items after typing "lis":
+  //   1. The typed text echo (not clickable)
+  //   2. The actual "Lis Pendens" option (bottom one — this is what we want)
+  // Use .last() to always target the real selectable option at the bottom.
+  await page.locator('li, .option, [role="option"]').filter({ hasText: 'Lis Pendens' }).last().click();
   await delay(1000); // Let the tag/chip appear
 
   await screenshot(page, '04-form-filled');
@@ -254,7 +256,7 @@ async function fillSearchForm(page: Page): Promise<void> {
   log.step(3, 'Submitting search...');
 
   // From screenshot: "Search" button with magnifying glass icon, bottom-right of form
-  await page.getByRole('button', { name: 'Search' }).click();
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
   await page.waitForLoadState('networkidle');
   await delay(3000); // Give results time to fully render
   await screenshot(page, '05-results');
