@@ -1,0 +1,315 @@
+{
+  "name": "FL Parcel Address Lookup",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n\n// --- Extract grantee name ---\n// The grantee field can have multiple names separated by \\n\n// The first name is typically the actual homeowner\nconst allGrantees = (item.grantee_name || '').split('\\n').map(n => n.trim()).filter(Boolean);\nconst primaryGrantee = allGrantees[0] || '';\n\n// --- Extract subdivision name from legal description ---\nlet legalDesc = item.legal_description || '';\nlet subdivisionName = legalDesc\n  .replace(/^Lot:\\s*\\S+\\s*/i, '')\n  .replace(/^Block:\\s*\\S+\\s*/i, '')\n  .replace(/^TS:\\s*/i, '')\n  .replace(/^REPLAT OF\\s*/i, '')\n  .trim();\n\n// --- County number lookup ---\nconst COUNTY_NUMBERS = {\n  'orange': 58\n};\nconst countyName = (item.county || 'orange').toLowerCase();\nconst countyNumber = COUNTY_NUMBERS[countyName];\n\nif (!countyNumber) {\n  return [{\n    json: {\n      ...item,\n      error: `Unknown county: ${countyName}. Add it to COUNTY_NUMBERS.`,\n      property_address: null,\n      lookup_status: 'error'\n    }\n  }];\n}\n\n// --- Build exact match query URL ---\nconst baseUrl = 'https://services9.arcgis.com/Gh9awoU677aKree0/arcgis/rest/services/Florida_Statewide_Cadastral/FeatureServer/0/query';\nconst exactWhere = `CO_NO=${countyNumber}+AND+OWN_NAME='${primaryGrantee}'`;\nconst outFields = 'PARCELNO,OWN_NAME,PHY_ADDR1,PHY_CITY,PHY_ZIPCD,S_LEGAL';\nconst exactUrl = `${baseUrl}?where=${exactWhere}&outFields=${outFields}&returnGeometry=false&f=json`;\n\nreturn [{\n  json: {\n    ...item,\n    primaryGrantee,\n    allGrantees,\n    subdivisionName,\n    countyNumber,\n    queryUrl: exactUrl,\n    lookup_status: 'pending'\n  }\n}];"
+      },
+      "id": "prep-query",
+      "name": "Prep Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.queryUrl }}",
+        "options": {}
+      },
+      "id": "exact-match-http",
+      "name": "Exact Match Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.features.length }}",
+                    "rightValue": "0",
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "No Results"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.features.length }}",
+                    "rightValue": "1",
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "One Result"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.features.length }}",
+                    "rightValue": "1",
+                    "operator": {
+                      "type": "number",
+                      "operation": "gt"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Multiple Results"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "route-results",
+      "name": "Route Results",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prepData = $('Prep Query').item.json;\nconst feature = $input.item.json.features[0];\nconst addr = feature.attributes;\n\nreturn [{\n  json: {\n    ...prepData,\n    property_address: addr.PHY_ADDR1 ? addr.PHY_ADDR1.trim() : '',\n    property_city: addr.PHY_CITY ? addr.PHY_CITY.trim() : '',\n    property_zip: addr.PHY_ZIPCD || '',\n    parcel_number: addr.PARCELNO || '',\n    owner_name_on_parcel: addr.OWN_NAME || '',\n    parcel_legal: addr.S_LEGAL || '',\n    match_score: null,\n    total_results: 1,\n    lookup_status: 'matched',\n    match_method: 'exact_name'\n  }\n}];"
+      },
+      "id": "extract-single",
+      "name": "Extract Single Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prepData = $('Prep Query').item.json;\nconst features = $input.item.json.features || [];\nconst subdivisionName = prepData.subdivisionName.toUpperCase();\n\n// Extract keywords from subdivision name (2+ chars, skip numbers)\nconst keywords = subdivisionName\n  .split(/\\s+/)\n  .filter(w => w.length >= 2 && !/^\\d+$/.test(w));\n\n// Score each parcel by how many keywords match its S_LEGAL\nlet bestMatch = null;\nlet bestScore = 0;\n\nfor (const feature of features) {\n  const sLegal = (feature.attributes.S_LEGAL || '').toUpperCase();\n  let score = 0;\n  for (const keyword of keywords) {\n    if (sLegal.includes(keyword)) {\n      score++;\n    }\n  }\n  if (score > bestScore) {\n    bestScore = score;\n    bestMatch = feature;\n  }\n}\n\nif (bestMatch && bestScore >= 1) {\n  const addr = bestMatch.attributes;\n  return [{\n    json: {\n      ...prepData,\n      property_address: addr.PHY_ADDR1 ? addr.PHY_ADDR1.trim() : '',\n      property_city: addr.PHY_CITY ? addr.PHY_CITY.trim() : '',\n      property_zip: addr.PHY_ZIPCD || '',\n      parcel_number: addr.PARCELNO || '',\n      owner_name_on_parcel: addr.OWN_NAME || '',\n      parcel_legal: addr.S_LEGAL || '',\n      match_score: bestScore,\n      total_keywords: keywords.length,\n      total_results: features.length,\n      lookup_status: 'matched',\n      match_method: 'legal_description'\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...prepData,\n    property_address: null,\n    total_results: features.length,\n    lookup_status: 'no_legal_match',\n    match_method: 'failed'\n  }\n}];"
+      },
+      "id": "match-legal",
+      "name": "Match Legal Description",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prepData = $('Prep Query').item.json;\nconst primaryGrantee = prepData.primaryGrantee;\n\nconst PREFIXES_TO_STRIP = ['DE', 'DEL', 'DELA', 'DI', 'VAN', 'VON', 'LA', 'LE', 'MC', 'ST'];\n\nconst nameParts = primaryGrantee.split(/\\s+/).filter(Boolean);\n\nlet surname = nameParts[0];\nif (nameParts.length >= 2 && PREFIXES_TO_STRIP.includes(nameParts[0].toUpperCase())) {\n  surname = nameParts[1];\n}\n\nconst baseUrl = 'https://services9.arcgis.com/Gh9awoU677aKree0/arcgis/rest/services/Florida_Statewide_Cadastral/FeatureServer/0/query';\nconst countyNumber = prepData.countyNumber;\nconst likeWhere = `CO_NO=${countyNumber}+AND+OWN_NAME+LIKE+'%25${surname}%25'`;\nconst outFields = 'PARCELNO,OWN_NAME,PHY_ADDR1,PHY_CITY,PHY_ZIPCD,S_LEGAL';\nconst likeUrl = `${baseUrl}?where=${likeWhere}&outFields=${outFields}&resultRecordCount=20&returnGeometry=false&f=json`;\n\nreturn [{\n  json: {\n    ...prepData,\n    retryingSurname: surname,\n    queryUrl: likeUrl,\n    lookup_status: 'retrying_like'\n  }\n}];"
+      },
+      "id": "prep-like-retry",
+      "name": "Prep LIKE Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 80]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.queryUrl }}",
+        "options": {}
+      },
+      "id": "like-query-http",
+      "name": "LIKE Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 80]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.features.length }}",
+                    "rightValue": "0",
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "No Results"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.features.length }}",
+                    "rightValue": "1",
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "One Result"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.features.length }}",
+                    "rightValue": "1",
+                    "operator": {
+                      "type": "number",
+                      "operation": "gt"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Multiple Results"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "route-like-results",
+      "name": "Route LIKE Results",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1320, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prepData = $('Prep LIKE Retry').item.json;\nconst feature = $input.item.json.features[0];\nconst addr = feature.attributes;\n\nreturn [{\n  json: {\n    ...prepData,\n    property_address: addr.PHY_ADDR1 ? addr.PHY_ADDR1.trim() : '',\n    property_city: addr.PHY_CITY ? addr.PHY_CITY.trim() : '',\n    property_zip: addr.PHY_ZIPCD || '',\n    parcel_number: addr.PARCELNO || '',\n    owner_name_on_parcel: addr.OWN_NAME || '',\n    parcel_legal: addr.S_LEGAL || '',\n    match_score: null,\n    total_results: 1,\n    lookup_status: 'matched',\n    match_method: 'like_single'\n  }\n}];"
+      },
+      "id": "extract-single-like",
+      "name": "Extract Single LIKE Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prepData = $('Prep LIKE Retry').item.json;\nconst features = $input.item.json.features || [];\nconst subdivisionName = prepData.subdivisionName.toUpperCase();\n\nconst keywords = subdivisionName\n  .split(/\\s+/)\n  .filter(w => w.length >= 2 && !/^\\d+$/.test(w));\n\nlet bestMatch = null;\nlet bestScore = 0;\n\nfor (const feature of features) {\n  const sLegal = (feature.attributes.S_LEGAL || '').toUpperCase();\n  let score = 0;\n  for (const keyword of keywords) {\n    if (sLegal.includes(keyword)) {\n      score++;\n    }\n  }\n  if (score > bestScore) {\n    bestScore = score;\n    bestMatch = feature;\n  }\n}\n\nif (bestMatch && bestScore >= 1) {\n  const addr = bestMatch.attributes;\n  return [{\n    json: {\n      ...prepData,\n      property_address: addr.PHY_ADDR1 ? addr.PHY_ADDR1.trim() : '',\n      property_city: addr.PHY_CITY ? addr.PHY_CITY.trim() : '',\n      property_zip: addr.PHY_ZIPCD || '',\n      parcel_number: addr.PARCELNO || '',\n      owner_name_on_parcel: addr.OWN_NAME || '',\n      parcel_legal: addr.S_LEGAL || '',\n      match_score: bestScore,\n      total_keywords: keywords.length,\n      total_results: features.length,\n      lookup_status: 'matched',\n      match_method: 'like_legal_description'\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...prepData,\n    property_address: null,\n    total_results: features.length,\n    lookup_status: 'no_match_found',\n    match_method: 'failed'\n  }\n}];"
+      },
+      "id": "match-legal-like",
+      "name": "Match Legal LIKE",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// This handles filings where no parcel match was found.\n// Route these to a Google Sheet, Slack, or manual review queue.\nlet prepData;\ntry {\n  prepData = $('Prep LIKE Retry').item.json;\n} catch (e) {\n  // If we got here from the exact match legal description path,\n  // Prep LIKE Retry won't exist. Fall back to Prep Query.\n  prepData = $('Prep Query').item.json;\n}\n\nreturn [{\n  json: {\n    ...prepData,\n    property_address: null,\n    property_city: null,\n    property_zip: null,\n    parcel_number: null,\n    lookup_status: 'not_found',\n    match_method: 'exhausted'\n  }\n}];"
+      },
+      "id": "flag-no-match",
+      "name": "Flag No Match",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, -140]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "merge-matched",
+      "name": "Merge Matched",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1760, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [{ "node": "Prep Query", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prep Query": {
+      "main": [
+        [{ "node": "Exact Match Query", "type": "main", "index": 0 }]
+      ]
+    },
+    "Exact Match Query": {
+      "main": [
+        [{ "node": "Route Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route Results": {
+      "main": [
+        [{ "node": "Prep LIKE Retry", "type": "main", "index": 0 }],
+        [{ "node": "Extract Single Result", "type": "main", "index": 0 }],
+        [{ "node": "Match Legal Description", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract Single Result": {
+      "main": [
+        [{ "node": "Merge Matched", "type": "main", "index": 0 }]
+      ]
+    },
+    "Match Legal Description": {
+      "main": [
+        [{ "node": "Merge Matched", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prep LIKE Retry": {
+      "main": [
+        [{ "node": "LIKE Query", "type": "main", "index": 0 }]
+      ]
+    },
+    "LIKE Query": {
+      "main": [
+        [{ "node": "Route LIKE Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route LIKE Results": {
+      "main": [
+        [{ "node": "Flag No Match", "type": "main", "index": 0 }],
+        [{ "node": "Extract Single LIKE Result", "type": "main", "index": 0 }],
+        [{ "node": "Match Legal LIKE", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract Single LIKE Result": {
+      "main": [
+        [{ "node": "Merge Matched", "type": "main", "index": 0 }]
+      ]
+    },
+    "Match Legal LIKE": {
+      "main": [
+        [{ "node": "Merge Matched", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0
+}
