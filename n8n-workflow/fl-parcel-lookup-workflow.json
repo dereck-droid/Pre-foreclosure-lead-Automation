@@ -249,6 +249,16 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [1760, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const allContacts = [];\n\nconst CORP_KEYWORDS = [\n  'LLC', 'INC', 'CORP', 'CORPORATION', 'ASSOCIATION', 'BANK', 'TRUST',\n  'SECRETARY OF', 'DEPARTMENT OF', 'HOUSING AUTHORITY', 'FINANCE',\n  'MORTGAGE', 'LENDING', 'SERVICES', 'HOLDINGS', 'PROPERTIES',\n  'VENTURES', 'ENTERPRISES', 'GROUP', 'PARTNERS', 'FUND',\n  'COUNTY', 'STATE OF', 'CITY OF', 'HOMEOWNERS', 'HOA',\n  'PURCHASING', 'INVESTMENTS', 'NATIONAL', 'FEDERAL',\n  'COMPANY', 'SAVINGS', 'PLAN'\n];\n\nconst NAME_PREFIXES = ['DE', 'DEL', 'DELA', 'DI', 'VAN', 'VON', 'LA', 'LE', 'MC', 'ST'];\n\nfor (const item of $input.all()) {\n  const data = item.json;\n\n  // FILTER 1: Skip items without a matched address\n  if (!data.property_address || data.lookup_status !== 'matched') {\n    continue;\n  }\n\n  // FILTER 2: Skip timeshare filings\n  const legalDesc = (data.legal_description || '').trim();\n  if (/^TS:/i.test(legalDesc)) {\n    continue;\n  }\n\n  // VALIDATE: Check for possible wrong single-result matches\n  let matchWarning = '';\n  if (data.match_method === 'exact_name' && data.total_results === 1) {\n    const subdivisionName = (data.subdivisionName || '').toUpperCase();\n    const parcelLegal = (data.parcel_legal || '').toUpperCase();\n    const subKeywords = subdivisionName.split(/\\s+/)\n      .filter(w => w.length >= 4 && !/^\\d+$/.test(w));\n    if (subKeywords.length > 0) {\n      const anyMatch = subKeywords.some(kw => parcelLegal.includes(kw));\n      if (!anyMatch) {\n        matchWarning = ' [ADDRESS UNVERIFIED - parcel legal desc does not match filing]';\n      }\n    }\n  }\n\n  const grantees = data.allGrantees || [];\n\n  for (const name of grantees) {\n    const upperName = name.toUpperCase().trim();\n    const isCorp = CORP_KEYWORDS.some(kw => upperName.includes(kw));\n    if (isCorp) continue;\n    if (!upperName || upperName.length < 2) continue;\n    const parts = upperName.split(/\\s+/).filter(Boolean);\n    if (parts.length === 1) continue;\n\n    let firstName = '';\n    let lastName = '';\n\n    if (parts.length >= 3 && NAME_PREFIXES.includes(parts[0])) {\n      lastName = parts[0] + ' ' + parts[1];\n      firstName = parts[2];\n    } else if (parts.length === 2) {\n      lastName = parts[0];\n      firstName = parts[1];\n    } else {\n      lastName = parts[0];\n      firstName = parts[1];\n    }\n\n    allContacts.push({\n      json: {\n        document_number: data.document_number || '',\n        document_type: data.document_type || '',\n        recording_date: data.recording_date || '',\n        grantor_name: data.grantor_name || '',\n        legal_description: data.legal_description || '',\n        grantee_name: name,\n        property_address: data.property_address || '',\n        property_city: data.property_city || '',\n        property_zip: data.property_zip ? String(data.property_zip) : '',\n        first_name: firstName,\n        last_name: lastName,\n        property_state: 'FL',\n        match_method: data.match_method || '',\n        match_warning: matchWarning\n      }\n    });\n  }\n}\n\nreturn allContacts;"
+      },
+      "id": "prep-contacts",
+      "name": "Prep Contacts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 300]
     }
   ],
   "connections": {
@@ -309,6 +319,11 @@
     "Match Legal LIKE": {
       "main": [
         [{ "node": "Merge Matched", "type": "main", "index": 0 }]
+      ]
+    },
+    "Merge Matched": {
+      "main": [
+        [{ "node": "Prep Contacts", "type": "main", "index": 0 }]
       ]
     }
   },

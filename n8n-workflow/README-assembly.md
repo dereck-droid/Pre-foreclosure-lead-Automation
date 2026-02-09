@@ -129,8 +129,48 @@ All JavaScript code is in `fl-parcel-lookup-nodes.js`. Copy each section into th
 ### Node 9: "Merge All Paths" (Merge)
 - **Type:** Merge
 - **Mode:** Append
-- **Connect FROM:** Nodes 4a, 4b, 8a, 8b (all successful match paths)
-- **Connects TO:** Next step in your pipeline (Accurate Append, then GHL)
+- **Number of Inputs:** 4
+- **Connect FROM:** Nodes 8b (input 0), 4b (input 1), 4a (input 2), 8a (input 3)
+- **Connects TO:** Node 10 (Prep Contacts)
+
+**Note:** Both Node 4a and 8a output items even when matching fails. Items with `lookup_status` of `no_legal_match` or `no_match_found` will have `property_address: null`. These are filtered out in Node 10.
+
+---
+
+### Node 10: "Prep Contacts" (Code)
+- **Type:** Code
+- **Language:** JavaScript
+- **Mode:** Run Once for All Items
+- **Code:** Copy the `NODE 10` section from the JS file
+- **Connects FROM:** Node 9 (Merge)
+- **Connects TO:** Node 11 (Bundle for Tracerfy)
+
+**What it does:** Converts filings into individual contact records, applying three critical filters:
+1. **Skips contacts without addresses** — filings where parcel lookup failed have no value without an address
+2. **Skips timeshare filings** — legal descriptions starting with "TS:" are vacation ownership foreclosures (not homeowners losing their residence)
+3. **Skips corporate/government entities** — LLCs, banks, HOAs, etc.
+
+Also validates single-result exact matches: if the parcel's legal description doesn't contain keywords from the filing's subdivision name, the contact gets a warning flag in the Notes column (possible wrong address match).
+
+---
+
+### Node 11: "Bundle for Tracerfy" (Code)
+- **Type:** Code
+- **Language:** JavaScript
+- **Mode:** Run Once for All Items
+- **Code:** Copy the `NODE 11` section from the JS file
+- **Connects FROM:** Node 10
+- **Connects TO:** Submit to Tracerfy (HTTP Request)
+
+---
+
+### Node 12: "Format for Google Sheet" (Code)
+- **Type:** Code
+- **Language:** JavaScript
+- **Mode:** Run Once for All Items
+- **Code:** Copy the `NODE 12` section from the JS file
+- **Connects FROM:** Submit to Tracerfy
+- **Connects TO:** Append row in sheet (Google Sheets)
 
 ---
 
@@ -162,12 +202,37 @@ All JavaScript code is in `fl-parcel-lookup-nodes.js`. Copy each section into th
 [8c]  \  |  /       /
  |     [9. Merge] --
  |         |
-[manual]  [Accurate Append → GHL]
+ |   [10. Prep Contacts]     ← filters out: no address,
+ |         |                    timeshares, corporations
+[dead   [11. Bundle for Tracerfy]
+ end]      |
+        [Submit to Tracerfy HTTP]
+           |
+        [12. Format for Google Sheet]
+           |
+        [Append to Google Sheet]
 ```
+
+## Filtering Behavior
+
+### What gets filtered OUT (and why)
+
+| Filter | Example | Reason |
+|--------|---------|--------|
+| No address found | RAMGOBIN BALGRIM, SLOTHOWER SUSAN DIANE | Parcel lookup exhausted all methods. No property to locate. |
+| Timeshare filing | WHITE JEFFREY CHARLES (TS: GRANDE VISTA) | Vacation ownership, not a primary residence. Grantor is usually Marriott, Wyndham, etc. |
+| Corporate entity | D J GLOBAL HOLDING LLC | Not a person, not a lead. |
+| Failed legal match | LIGGATT PETER A J | Found parcel records but couldn't match to the right property. |
+
+### What gets flagged (but still included)
+
+| Flag | Example | Reason |
+|------|---------|--------|
+| ADDRESS UNVERIFIED | MOMPLAISIR RUBIN | Single exact match, but parcel's legal description doesn't contain filing's subdivision name. May be a different property. |
 
 ## Output Data Shape
 
-After the merge, each item looks like:
+After Prep Contacts, each item looks like:
 
 ```json
 {
@@ -177,16 +242,14 @@ After the merge, each item looks like:
   "grantor_name": "NEWREZ LLC",
   "grantee_name": "MAHURIN ESSIE B",
   "legal_description": "Lot: 9 Block: D PRIMROSE TERRACE",
-  "primaryGrantee": "MAHURIN ESSIE B",
-  "subdivisionName": "PRIMROSE TERRACE",
   "property_address": "2923 E MARKS ST",
   "property_city": "Orlando",
-  "property_zip": 32803,
-  "parcel_number": "192230725604090",
-  "owner_name_on_parcel": "MAHURIN ESSIE B",
-  "parcel_legal": "PRIMROSE TERRACE T/71 LOT 9 &",
-  "lookup_status": "matched",
-  "match_method": "exact_name"
+  "property_zip": "32803",
+  "first_name": "ESSIE",
+  "last_name": "MAHURIN",
+  "property_state": "FL",
+  "match_method": "exact_name",
+  "match_warning": ""
 }
 ```
 

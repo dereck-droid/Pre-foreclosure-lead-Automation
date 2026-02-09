@@ -443,19 +443,260 @@ return [{
 // n8n settings:
 //   - Node type: Merge
 //   - Mode: Append
-//   - Connect ALL successful outputs here:
-//     - Node 4a (matched from exact multiple)
-//     - Node 4b (single exact result)
-//     - Node 8a (matched from LIKE multiple)
-//     - Node 8b (single LIKE result)
+//   - Number of Inputs: 4
+//   - Connect ALL outputs here:
+//     - Input 0: Node 8b (single LIKE result)
+//     - Input 1: Node 4b (single exact result)
+//     - Input 2: Node 4a (matched from exact multiple — includes failures)
+//     - Input 3: Node 8a (matched from LIKE multiple — includes failures)
+//
+// IMPORTANT: Both Node 4a and 8a output items even when matching fails
+// (lookup_status = 'no_legal_match' or 'no_match_found'). These items
+// have property_address = null. The Prep Contacts node below filters
+// them out before they reach Tracerfy / Google Sheets.
 //
 // After this merge, every item has:
 //   - All original scraper fields (document_number, grantee_name, etc.)
-//   - property_address, property_city, property_zip
+//   - property_address, property_city, property_zip (null if not found)
 //   - parcel_number, owner_name_on_parcel
-//   - lookup_status ('matched' or 'not_found')
+//   - lookup_status ('matched', 'no_match_found', 'no_legal_match')
 //   - match_method ('exact_name', 'legal_description', 'like_single', etc.)
-//
-// The next step would be Accurate Append for phone/email,
-// then push to GHL.
 // =============================================================
+
+
+// =============================================================
+// NODE 10: "Prep Contacts" (Code Node)
+// =============================================================
+// Connected to: Node 9 (Merge All Paths)
+//
+// n8n settings:
+//   - Node type: Code
+//   - Language: JavaScript
+//   - Mode: Run Once for All Items
+//
+// PURPOSE: Converts filings into individual contact records for
+// skip tracing and CRM. Applies three critical filters:
+//
+//   1. SKIP contacts without a property address — these are filings
+//      where the parcel lookup failed. Without an address, the lead
+//      has no value (can't send mail, can't locate the property).
+//
+//   2. SKIP timeshare filings — legal descriptions starting with
+//      "TS:" are timeshare/vacation ownership foreclosures (e.g.,
+//      Marriott, Wyndham). These are not homeowners losing their
+//      primary residence and are generally not useful leads.
+//
+//   3. SKIP corporate/government entities — LLCs, banks, HOAs,
+//      county agencies, etc. Only individual people are leads.
+//
+// ALSO validates single-result exact matches: if the filing's
+// subdivision name doesn't appear in the matched parcel's legal
+// description, the match may be wrong (person owns a different
+// property). These are flagged in the Notes column.
+// =============================================================
+
+const allContacts = [];
+
+// Keywords that identify corporate/government entities
+const CORP_KEYWORDS = [
+  'LLC', 'INC', 'CORP', 'CORPORATION', 'ASSOCIATION', 'BANK', 'TRUST',
+  'SECRETARY OF', 'DEPARTMENT OF', 'HOUSING AUTHORITY', 'FINANCE',
+  'MORTGAGE', 'LENDING', 'SERVICES', 'HOLDINGS', 'PROPERTIES',
+  'VENTURES', 'ENTERPRISES', 'GROUP', 'PARTNERS', 'FUND',
+  'COUNTY', 'STATE OF', 'CITY OF', 'HOMEOWNERS', 'HOA',
+  'PURCHASING', 'INVESTMENTS', 'NATIONAL', 'FEDERAL',
+  'COMPANY', 'SAVINGS', 'PLAN'
+];
+
+// Known surname prefixes that should stay attached
+const NAME_PREFIXES = ['DE', 'DEL', 'DELA', 'DI', 'VAN', 'VON', 'LA', 'LE', 'MC', 'ST'];
+
+for (const item of $input.all()) {
+  const data = item.json;
+
+  // --- FILTER 1: Skip items without a matched address ---
+  // Items with lookup_status != 'matched' have no usable address.
+  // Items that went through legal description matching but failed
+  // will have property_address = null and status like 'no_match_found'.
+  if (!data.property_address || data.lookup_status !== 'matched') {
+    continue;
+  }
+
+  // --- FILTER 2: Skip timeshare filings ---
+  // Legal descriptions starting with "TS:" are timeshare interests
+  // (vacation ownership, not primary residences).
+  const legalDesc = (data.legal_description || '').trim();
+  if (/^TS:/i.test(legalDesc)) {
+    continue;
+  }
+
+  // --- VALIDATE: Check for possible wrong matches ---
+  // When exact name query returned 1 result, it was auto-accepted.
+  // Cross-check: does the parcel's legal description contain ANY
+  // keywords from the filing's subdivision name?
+  let matchWarning = '';
+  if (data.match_method === 'exact_name' && data.total_results === 1) {
+    const subdivisionName = (data.subdivisionName || '').toUpperCase();
+    const parcelLegal = (data.parcel_legal || '').toUpperCase();
+    const subKeywords = subdivisionName.split(/\s+/)
+      .filter(w => w.length >= 4 && !/^\d+$/.test(w));
+    if (subKeywords.length > 0) {
+      const anyMatch = subKeywords.some(kw => parcelLegal.includes(kw));
+      if (!anyMatch) {
+        matchWarning = ' [ADDRESS UNVERIFIED - parcel legal desc does not match filing]';
+      }
+    }
+  }
+
+  const grantees = data.allGrantees || [];
+
+  for (const name of grantees) {
+    const upperName = name.toUpperCase().trim();
+
+    // Skip corporate/government entities
+    const isCorp = CORP_KEYWORDS.some(kw => upperName.includes(kw));
+    if (isCorp) continue;
+
+    // Skip empty names or single-word abbreviations
+    if (!upperName || upperName.length < 2) continue;
+    const parts = upperName.split(/\s+/).filter(Boolean);
+    if (parts.length === 1) continue;
+
+    // --- Name splitting logic ---
+    // Property records use: LASTNAME FIRSTNAME MIDDLE_INITIAL
+    let firstName = '';
+    let lastName = '';
+
+    if (parts.length >= 3 && NAME_PREFIXES.includes(parts[0])) {
+      lastName = parts[0] + ' ' + parts[1];
+      firstName = parts[2];
+    } else if (parts.length === 2) {
+      lastName = parts[0];
+      firstName = parts[1];
+    } else {
+      lastName = parts[0];
+      firstName = parts[1];
+    }
+
+    allContacts.push({
+      json: {
+        document_number: data.document_number || '',
+        document_type: data.document_type || '',
+        recording_date: data.recording_date || '',
+        grantor_name: data.grantor_name || '',
+        legal_description: data.legal_description || '',
+        grantee_name: name,
+        property_address: data.property_address || '',
+        property_city: data.property_city || '',
+        property_zip: data.property_zip ? String(data.property_zip) : '',
+        first_name: firstName,
+        last_name: lastName,
+        property_state: 'FL',
+        match_method: data.match_method || '',
+        match_warning: matchWarning
+      }
+    });
+  }
+}
+
+return allContacts;
+
+
+// =============================================================
+// NODE 11: "Bundle for Tracerfy" (Code Node)
+// =============================================================
+// Connected to: Node 10 (Prep Contacts)
+//
+// n8n settings:
+//   - Node type: Code
+//   - Language: JavaScript
+//   - Mode: Run Once for All Items
+//
+// Bundles all contacts into the JSON format Tracerfy expects.
+// =============================================================
+
+const contacts = $input.all().map(item => item.json);
+
+const records = contacts.map(c => ({
+  address: c.property_address,
+  city: c.property_city,
+  state: c.property_state,
+  zip: c.property_zip,
+  first_name: c.first_name,
+  last_name: c.last_name,
+  mail_address: '',
+  mail_city: '',
+  mail_state: '',
+  mail_zip: ''
+}));
+
+return [{
+  json: {
+    address_column: 'address',
+    city_column: 'city',
+    state_column: 'state',
+    zip_column: 'zip',
+    first_name_column: 'first_name',
+    last_name_column: 'last_name',
+    mail_address_column: 'mail_address',
+    mail_city_column: 'mail_city',
+    mail_state_column: 'mail_state',
+    mailing_zip_column: 'mail_zip',
+    trace_type: 'normal',
+    json_data: JSON.stringify(records),
+    original_contacts: contacts
+  }
+}];
+
+
+// =============================================================
+// NODE 12: "Format for Google Sheet" (Code Node)
+// =============================================================
+// Connected to: Node (after Tracerfy submit)
+//
+// n8n settings:
+//   - Node type: Code
+//   - Language: JavaScript
+//   - Mode: Run Once for All Items
+// =============================================================
+
+const originalContacts = $('Bundle for Tracerfy').first().json.original_contacts;
+
+const sheetRows = [];
+
+for (const original of originalContacts) {
+  const fullAddress = [
+    original.property_address,
+    original.property_city,
+    'FL',
+    original.property_zip
+  ].filter(Boolean).join(', ');
+
+  let notes = `${original.document_type}`;
+  if (original.match_warning) {
+    notes += original.match_warning;
+  }
+
+  sheetRows.push({
+    json: {
+      'Lead Status': 'New',
+      'Date Found': original.recording_date,
+      'Document Number': original.document_number,
+      'Grantee Name': original.grantee_name,
+      'Grantor Name': original.grantor_name,
+      'Legal Description': original.legal_description,
+      'Property Address': fullAddress,
+      'Phone 1': '',
+      'Phone 2': '',
+      'Email': '',
+      'Mailing Address': '',
+      'Skip Trace Status': 'Pending',
+      'CRM Status': '',
+      'Notes': notes,
+      'Date Added to CRM': '',
+      'Match Key': original.property_address.toUpperCase() + '|' + original.first_name.toUpperCase() + '|' + original.last_name.toUpperCase()
+    }
+  });
+}
+
+return sheetRows;
