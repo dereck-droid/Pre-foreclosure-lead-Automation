@@ -79,8 +79,8 @@ function delay(ms?: number): Promise<void> {
 async function navigateAndAcceptDisclaimer(page: Page): Promise<void> {
   log.step(1, 'Navigating to Orange County Comptroller portal...');
 
-  await page.goto(scraperConfig.startUrl, { waitUntil: 'networkidle' });
-  await delay(2000); // Let the page fully settle
+  await page.goto(scraperConfig.startUrl, { waitUntil: 'domcontentloaded' });
+  await delay(1500); // Let the page settle
   await screenshot(page, '01-disclaimer-page');
 
   // --- Solve reCAPTCHA v2 checkbox ---
@@ -98,8 +98,8 @@ async function navigateAndAcceptDisclaimer(page: Page): Promise<void> {
     log.warn('reCAPTCHA iframe not found after 15s — may not be present');
   }
 
-  // Extra wait for the reCAPTCHA to fully initialize its JavaScript
-  await delay(3000);
+  // Brief wait for the reCAPTCHA to initialize its JavaScript
+  await delay(2000);
 
   // The site has a reCAPTCHA v2 "I'm not a robot" checkbox.
   // We find the sitekey from the page and send it to 2Captcha.
@@ -145,8 +145,8 @@ async function navigateAndAcceptDisclaimer(page: Page): Promise<void> {
   await acceptButton.waitFor({ state: 'visible', timeout: 10_000 });
   await delay(1000); // Brief pause like a human would
   await acceptButton.click();
-  await page.waitForLoadState('networkidle');
-  await delay(2000); // Let the next page fully load
+  await page.waitForLoadState('domcontentloaded');
+  await delay(1500); // Let the next page load
   await screenshot(page, '02-after-accept');
 
   log.success('Disclaimer accepted');
@@ -168,8 +168,8 @@ async function navigateToSearch(page: Page): Promise<void> {
   await delay(1500);
 
   await page.getByText('Basic Official Records Search').click();
-  await page.waitForLoadState('networkidle');
-  await delay(2000); // Let the search form fully render
+  await page.waitForLoadState('domcontentloaded');
+  await delay(1500); // Let the search form render
 
   // Wait for the search form to actually appear
   await page.waitForSelector('input[placeholder="mm/dd/yyyy"]', { timeout: 15_000 });
@@ -263,8 +263,8 @@ async function fillSearchForm(page: Page, date?: string): Promise<string> {
 
   // From screenshot: "Search" button with magnifying glass icon, bottom-right of form
   await page.getByRole('button', { name: 'Search', exact: true }).click();
-  await page.waitForLoadState('networkidle');
-  await delay(3000); // Give results time to fully render
+  await page.waitForLoadState('domcontentloaded');
+  await delay(2000); // Give results time to render
   await screenshot(page, '05-results');
 
   log.success('Search submitted');
