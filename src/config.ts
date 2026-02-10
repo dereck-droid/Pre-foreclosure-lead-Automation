@@ -57,7 +57,7 @@ export const captcha = {
   submitUrl: 'https://2captcha.com/in.php',
   resultUrl: 'https://2captcha.com/res.php',
   pollIntervalMs: 5_000,
-  maxWaitMs: 120_000, // 2 minutes — keeps total run under n8n's 5-min timeout
+  maxWaitMs: 180_000, // 3 minutes — 2Captcha uses real humans, solve times vary
 };
 
 // ---------------------------------------------------------------------------
@@ -65,8 +65,4 @@ export const captcha = {
 // ---------------------------------------------------------------------------
 export const server = {
   port: parseInt(optionalEnv('PORT', '3000'), 10),
-  /** Overall timeout for a single scrape run (ms). Must be under n8n's HTTP timeout (300s). */
-  scrapeTimeoutMs: parseInt(optionalEnv('SCRAPE_TIMEOUT_MS', '240000'), 10),
-  /** Auto-reset the concurrency lock after this many ms (prevents stale locks on crash). */
-  lockTimeoutMs: parseInt(optionalEnv('LOCK_TIMEOUT_MS', '300000'), 10),
 };
