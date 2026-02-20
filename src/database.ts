@@ -16,16 +16,6 @@ export interface Filing {
   legal_description: string; // Property info like "Lot: 7 RIDGEMOORE PHASE ONE"
 }
 
-export interface RunLog {
-  id?: number;
-  started_at: string;
-  completed_at?: string;
-  status: 'running' | 'success' | 'failed';
-  total_scraped: number;
-  new_filings: number;
-  errors: string;
-}
-
 // ---------------------------------------------------------------------------
 // Database initialization
 // ---------------------------------------------------------------------------
@@ -40,7 +30,6 @@ export function initDatabase(): void {
   // Enable WAL mode for better concurrent access
   db.pragma('journal_mode = WAL');
 
-  // Create tables — lean schema, no enrichment columns (n8n handles that)
   db.exec(`
     CREATE TABLE IF NOT EXISTS filings (
       document_number   TEXT PRIMARY KEY,
@@ -50,16 +39,6 @@ export function initDatabase(): void {
       grantee_name      TEXT NOT NULL,
       legal_description TEXT DEFAULT '',
       created_at        TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS run_log (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      started_at    TEXT NOT NULL,
-      completed_at  TEXT,
-      status        TEXT NOT NULL DEFAULT 'running',
-      total_scraped INTEGER DEFAULT 0,
-      new_filings   INTEGER DEFAULT 0,
-      errors        TEXT DEFAULT '[]'
     );
   `);
 
@@ -94,69 +73,10 @@ export function insertNewFilings(filings: Filing[]): Filing[] {
   return newFilings;
 }
 
-// ---------------------------------------------------------------------------
-// Run log operations
-// ---------------------------------------------------------------------------
-
-/** Start a new run log entry */
-export function startRun(): number {
-  const result = db.prepare(`
-    INSERT INTO run_log (started_at, status) VALUES (datetime('now'), 'running')
-  `).run();
-  return Number(result.lastInsertRowid);
-}
-
-/** Complete a run log entry */
-export function completeRun(
-  runId: number,
-  status: 'success' | 'failed',
-  totalScraped: number,
-  newFilings: number,
-  errors: string[]
-): void {
-  db.prepare(`
-    UPDATE run_log
-    SET completed_at = datetime('now'), status = ?, total_scraped = ?, new_filings = ?, errors = ?
-    WHERE id = ?
-  `).run(status, totalScraped, newFilings, JSON.stringify(errors), runId);
-}
-
-/** Get the last successful run timestamp */
-export function getLastSuccessfulRun(): string | null {
-  const row = db.prepare(
-    "SELECT completed_at FROM run_log WHERE status = 'success' ORDER BY id DESC LIMIT 1"
-  ).get() as any;
-  return row?.completed_at || null;
-}
-
-/** Get count of consecutive failed runs */
-export function getConsecutiveFailures(): number {
-  const rows = db.prepare(
-    'SELECT status FROM run_log ORDER BY id DESC LIMIT 10'
-  ).all() as any[];
-  let count = 0;
-  for (const row of rows) {
-    if (row.status === 'failed') count++;
-    else break;
-  }
-  return count;
-}
-
-/** Get database stats for the /health endpoint */
-export function getStats(): {
-  total_filings: number;
-  total_runs: number;
-  last_successful_run: string | null;
-  consecutive_failures: number;
-} {
-  const filingCount = db.prepare('SELECT COUNT(*) as count FROM filings').get() as any;
-  const runCount = db.prepare('SELECT COUNT(*) as count FROM run_log').get() as any;
-  return {
-    total_filings: filingCount?.count || 0,
-    total_runs: runCount?.count || 0,
-    last_successful_run: getLastSuccessfulRun(),
-    consecutive_failures: getConsecutiveFailures(),
-  };
+/** Get the count of all known filings for the /health endpoint */
+export function getFilingCount(): number {
+  const row = db.prepare('SELECT COUNT(*) as count FROM filings').get() as any;
+  return row?.count || 0;
 }
 
 /** Close the database connection */

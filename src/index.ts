@@ -15,15 +15,13 @@
  */
 
 import { scrapeFilings } from './scraper.js';
+import { initDatabase, closeDatabase, insertNewFilings } from './database.js';
+import type { Filing } from './database.js';
 import {
-  initDatabase,
-  closeDatabase,
-  insertNewFilings,
   startRun,
   completeRun,
   getConsecutiveFailures,
-} from './database.js';
-import type { Filing } from './database.js';
+} from './convexLogger.js';
 import { log } from './logger.js';
 
 // ---------------------------------------------------------------------------
@@ -51,9 +49,9 @@ export async function runScraper(date?: string): Promise<ScrapeResult> {
   log.info('ORANGE COUNTY LIS PENDENS SCRAPER — Starting run');
   log.info('='.repeat(60));
 
-  // Initialize database
+  // Initialize SQLite (filings dedup) and Convex run log
   initDatabase();
-  const runId = startRun();
+  const runId = await startRun();
 
   try {
     // -------------------------------------------------------------------
@@ -68,9 +66,10 @@ export async function runScraper(date?: string): Promise<ScrapeResult> {
 
     if (allFilings.length === 0) {
       log.info('No filings found for this date. This may be normal (weekends, holidays).');
-      completeRun(runId, 'success', 0, 0, []);
-
       const duration = (Date.now() - overallStart) / 1000;
+      const durationRounded = Math.round(duration * 10) / 10;
+      await completeRun(runId, 'success', date_searched, 0, 0, 0, durationRounded);
+
       return {
         success: true,
         date_searched,
@@ -78,7 +77,7 @@ export async function runScraper(date?: string): Promise<ScrapeResult> {
         new_filings: [],
         already_seen: 0,
         consecutive_failures: 0,
-        duration_seconds: Math.round(duration * 10) / 10,
+        duration_seconds: durationRounded,
         error: null,
         error_step: null,
       };
@@ -106,6 +105,7 @@ export async function runScraper(date?: string): Promise<ScrapeResult> {
     // Summary
     // -------------------------------------------------------------------
     const duration = (Date.now() - overallStart) / 1000;
+    const durationRounded = Math.round(duration * 10) / 10;
 
     log.info('='.repeat(60));
     log.success('RUN COMPLETE');
@@ -116,7 +116,10 @@ export async function runScraper(date?: string): Promise<ScrapeResult> {
     log.info(`  Duration:           ${duration.toFixed(1)} seconds`);
     log.info('='.repeat(60));
 
-    completeRun(runId, 'success', totalScraped, newFilings.length, []);
+    await completeRun(
+      runId, 'success', date_searched,
+      totalScraped, newFilings.length, alreadySeen, durationRounded
+    );
 
     return {
       success: true,
@@ -125,19 +128,18 @@ export async function runScraper(date?: string): Promise<ScrapeResult> {
       new_filings: newFilings,
       already_seen: alreadySeen,
       consecutive_failures: 0,
-      duration_seconds: Math.round(duration * 10) / 10,
+      duration_seconds: durationRounded,
       error: null,
       error_step: null,
     };
 
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? error.stack : undefined;
     log.error(`RUN FAILED: ${message}`);
 
-    completeRun(runId, 'failed', 0, 0, [message]);
-    const consecutiveFailures = getConsecutiveFailures();
     const duration = (Date.now() - overallStart) / 1000;
+    const durationRounded = Math.round(duration * 10) / 10;
+    const dateSearched = date || new Date().toLocaleDateString('en-US');
 
     // Determine which step failed based on the error message
     let errorStep = 'unknown';
@@ -155,14 +157,22 @@ export async function runScraper(date?: string): Promise<ScrapeResult> {
       errorStep = 'timeout';
     }
 
+    await completeRun(
+      runId, 'failed', dateSearched,
+      0, 0, 0, durationRounded,
+      message, errorStep
+    );
+
+    const consecutiveFailures = await getConsecutiveFailures();
+
     return {
       success: false,
-      date_searched: date || new Date().toLocaleDateString('en-US'),
+      date_searched: dateSearched,
       total_on_site: 0,
       new_filings: [],
       already_seen: 0,
       consecutive_failures: consecutiveFailures,
-      duration_seconds: Math.round(duration * 10) / 10,
+      duration_seconds: durationRounded,
       error: message,
       error_step: errorStep,
     };

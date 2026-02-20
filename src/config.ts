@@ -1,6 +1,11 @@
 import 'dotenv/config';
+import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+// Also load .env.local — Convex CLI writes CONVEX_URL here by convention.
+// `override: false` means .env values take precedence if both files define the same key.
+dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: false });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');

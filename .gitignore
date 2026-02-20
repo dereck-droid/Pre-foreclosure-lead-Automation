@@ -6,3 +6,5 @@ screenshots/
 errors/
 *.log
 .DS_Store
+
+.env.local

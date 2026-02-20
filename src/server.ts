@@ -19,7 +19,8 @@
 
 import http from 'http';
 import { runScraper } from './index.js';
-import { initDatabase, closeDatabase, getStats } from './database.js';
+import { initDatabase, closeDatabase, getFilingCount } from './database.js';
+import { getStats } from './convexLogger.js';
 import { server as serverConfig } from './config.js';
 import { log } from './logger.js';
 
@@ -68,19 +69,24 @@ function jsonResponse(
 // Route handlers
 // ---------------------------------------------------------------------------
 
-/** GET /health — Server status + database stats */
-function handleHealth(res: http.ServerResponse): void {
+/** GET /health — Server status + filing count (SQLite) + run stats (Convex) */
+async function handleHealth(res: http.ServerResponse): Promise<void> {
   try {
     initDatabase();
-    const stats = getStats();
+    const totalFilings = getFilingCount();
     closeDatabase();
+
+    const convexStats = await getStats();
 
     jsonResponse(res, 200, {
       status: 'ok',
       scraper_busy: isRunning,
       last_run_at: lastRunAt,
       timestamp: new Date().toISOString(),
-      database: stats,
+      database: {
+        total_filings: totalFilings,
+        ...convexStats,
+      },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -162,7 +168,7 @@ const httpServer = http.createServer(async (req, res) => {
 
   // Route requests
   if (method === 'GET' && url === '/health') {
-    return handleHealth(res);
+    return await handleHealth(res);
   }
 
   if (method === 'POST' && url === '/scrape') {
