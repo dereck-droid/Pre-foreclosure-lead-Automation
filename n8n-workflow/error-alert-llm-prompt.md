@@ -1,8 +1,25 @@
 # LLM Error Alert Prompt — n8n Error Branch
 
-Paste the **System Message** below into the LLM node on the error branch
-of your n8n scraper workflow. Then wire `{{ $json }}` (the full error
-response from the HTTP Request node) into the **User Message**.
+This prompt is used in the **Basic LLM Chain** node on the error branch
+of the FL Parcel Address Lookup workflow. When the "Scrape County Website"
+HTTP Request fails (using `onError: continueErrorOutput`), the error
+output routes through this LLM chain, which generates a plain-language
+email body, then sends it via Gmail.
+
+---
+
+## n8n Node Configuration
+
+- **Node Type:** Basic LLM Chain (`@n8n/n8n-nodes-langchain.chainLlm`)
+- **Language Model:** OpenRouter Chat Model (connected as `ai_languageModel`)
+- **Prompt Type:** Define
+- **Text (User Message):** `{{ $json.error }}`
+- **System Message:** (see below)
+
+The LLM output (`$json.text`) is then wired into a Gmail node:
+- **To:** `Dereck@advancedLeadSolutions.com`
+- **Subject:** `EquityPro Scrape FAILED`
+- **Body:** `{{ $json.text }}`
 
 ---
 
@@ -48,17 +65,14 @@ ERROR STEP TRANSLATION GUIDE:
 
 ---
 
-## User Message
+## Note on User Message
 
-Wire the full JSON error payload into the user message. In n8n this is
-typically:
-
-```
-{{ JSON.stringify($json) }}
-```
-
-Or if the LLM node accepts structured input, just pass `{{ $json }}`
-directly.
+The current workflow wires `{{ $json.error }}` as the user message text,
+which passes only the error string from the scraper response. The system
+prompt references additional fields (`error_step`, `consecutive_failures`,
+`duration_seconds`) that may not all be present in the user message
+depending on the error response structure. The LLM will work with
+whatever information is available in the error string.
 
 ---
 

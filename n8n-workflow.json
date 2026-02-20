@@ -24,7 +24,8 @@
           "options": {
             "caseSensitive": true,
             "leftValue": "",
-            "typeValidation": "strict"
+            "typeValidation": "strict",
+            "version": 1
           },
           "conditions": [
             {
@@ -37,7 +38,8 @@
             }
           ],
           "combinator": "and"
-        }
+        },
+        "options": {}
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
@@ -51,7 +53,8 @@
           "options": {
             "caseSensitive": true,
             "leftValue": "",
-            "typeValidation": "strict"
+            "typeValidation": "strict",
+            "version": 1
           },
           "conditions": [
             {
@@ -72,7 +75,8 @@
             }
           ],
           "combinator": "and"
-        }
+        },
+        "options": {}
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
@@ -83,8 +87,16 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://your-server-ip:3000/scrape",
-        "sendBody": false,
+        "url": "https://pre-foreclosure-lead-automation-production.up.railway.app/scrape",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "date",
+              "value": "={{ $now.format('MM/dd/yyyy') }}"
+            }
+          ]
+        },
         "options": {
           "timeout": 300000
         }
@@ -93,7 +105,8 @@
       "typeVersion": 4.2,
       "position": [720, -120],
       "id": "scrape-request",
-      "name": "Scrape County Website"
+      "name": "Scrape County Website",
+      "onError": "continueErrorOutput"
     }
   ],
   "connections": {
