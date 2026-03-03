@@ -70,4 +70,9 @@ export const captcha = {
 // ---------------------------------------------------------------------------
 export const server = {
   port: parseInt(optionalEnv('PORT', '3000'), 10),
+
+  /** Maximum time (ms) a single scrape can run before being force-aborted.
+   *  Prevents the concurrency lock from getting stuck if the browser hangs.
+   *  Default: 5 minutes (CAPTCHA solving + scraping typically takes 1-3 min). */
+  scrapeTimeoutMs: parseInt(optionalEnv('SCRAPE_TIMEOUT_MS', '300000'), 10),
 };

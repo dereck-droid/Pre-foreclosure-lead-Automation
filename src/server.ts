@@ -127,16 +127,27 @@ async function handleScrape(
   lastRunAt = new Date().toISOString();
 
   try {
-    const result = await runScraper(date);
+    // Race the scraper against a timeout so the concurrency lock can never get
+    // permanently stuck if the browser hangs (e.g. CAPTCHA never resolves).
+    const timeoutMs = serverConfig.scrapeTimeoutMs;
+    const result = await Promise.race([
+      runScraper(date),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Scrape timed out after ${timeoutMs / 1000}s`)),
+          timeoutMs,
+        ),
+      ),
+    ]);
 
     // HTTP status: 200 for success, 502 for scraper failure
     // (502 = "Bad Gateway" — the upstream service (county site) had an issue)
     const statusCode = result.success ? 200 : 502;
     jsonResponse(res, statusCode, result);
   } catch (error) {
-    // This should rarely happen since runScraper catches its own errors,
-    // but just in case something truly unexpected occurs.
+    // This catches both unexpected errors and scrape timeouts.
     const message = error instanceof Error ? error.message : String(error);
+    log.error(`Scrape failed: ${message}`);
     jsonResponse(res, 500, {
       success: false,
       error: message,
