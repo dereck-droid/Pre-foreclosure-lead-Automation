@@ -231,6 +231,13 @@ Run `npx playwright install chromium` to reinstall the browser.
 - Check your 2Captcha balance at https://2captcha.com
 - Make sure your API key is correct in `.env`
 
+### Browser fails with EAGAIN (Railway deployment)
+- This means the container ran out of process slots — usually from zombie Chromium
+  processes left over by previous failed or timed-out scrape runs.
+- The scraper now auto-kills orphaned `chrome-headless-shell` processes before each
+  launch, so this should self-heal. If it persists, **redeploy the service** in the
+  Railway dashboard to get a fresh container.
+
 ### No results found
 - The county may not have posted filings yet today
 - Try changing the date range in the search
