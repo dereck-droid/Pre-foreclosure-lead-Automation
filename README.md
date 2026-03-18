@@ -238,6 +238,14 @@ Run `npx playwright install chromium` to reinstall the browser.
   launch, so this should self-heal. If it persists, **redeploy the service** in the
   Railway dashboard to get a fresh container.
 
+### n8n receives ECONNRESET from the scraper (Railway deployment)
+- Railway's edge proxy drops idle TCP connections after ~60-120 seconds.
+  During CAPTCHA solving the connection sits idle, triggering a reset.
+- The server now uses **chunked transfer encoding** with keep-alive newlines
+  every 15 seconds, preventing the proxy from killing the connection.
+- If you still see this error, ensure the n8n HTTP Request node timeout is set
+  to at least **300 seconds** (5 min) to allow for CAPTCHA + scraping time.
+
 ### No results found
 - The county may not have posted filings yet today
 - Try changing the date range in the search
