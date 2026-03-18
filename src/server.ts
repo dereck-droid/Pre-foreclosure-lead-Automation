@@ -98,7 +98,12 @@ async function handleHealth(res: http.ServerResponse): Promise<void> {
   }
 }
 
-/** POST /scrape — Trigger a scrape run */
+/** POST /scrape — Trigger a scrape run
+ *
+ *  Uses chunked transfer encoding with periodic keep-alive newlines so
+ *  Railway's edge proxy doesn't kill the idle connection during the 1-2
+ *  minute CAPTCHA-solving window.  n8n receives "\n\n\n...{json}" — leading
+ *  whitespace is ignored by JSON.parse(). */
 async function handleScrape(
   req: http.IncomingMessage,
   res: http.ServerResponse
@@ -127,6 +132,21 @@ async function handleScrape(
   isRunning = true;
   lastRunAt = new Date().toISOString();
 
+  // Start the response immediately with chunked encoding so we can send
+  // keep-alive bytes while the scraper runs (prevents proxy idle-timeout).
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Transfer-Encoding': 'chunked',
+  });
+
+  // Send a newline every 15 seconds to keep the connection alive
+  const keepAlive = setInterval(() => {
+    try { res.write('\n'); } catch { /* response may already be closed */ }
+  }, 15_000);
+
   try {
     // Race the scraper against a timeout so the concurrency lock can never get
     // permanently stuck if the browser hangs (e.g. CAPTCHA never resolves).
@@ -141,11 +161,11 @@ async function handleScrape(
       ),
     ]);
 
-    // HTTP status: 200 for success, 502 for scraper failure
-    // (502 = "Bad Gateway" — the upstream service (county site) had an issue)
-    const statusCode = result.success ? 200 : 502;
-    jsonResponse(res, statusCode, result);
+    clearInterval(keepAlive);
+    res.end(JSON.stringify(result, null, 2));
   } catch (error) {
+    clearInterval(keepAlive);
+
     // This catches both unexpected errors and scrape timeouts.
     // On timeout, runScraper() may still be running with an open browser.
     // Force-close any lingering browser to prevent zombie Chromium processes
@@ -158,7 +178,7 @@ async function handleScrape(
 
     const message = error instanceof Error ? error.message : String(error);
     log.error(`Scrape failed: ${message}`);
-    jsonResponse(res, 500, {
+    res.end(JSON.stringify({
       success: false,
       error: message,
       error_step: 'unexpected_server_error',
@@ -168,7 +188,7 @@ async function handleScrape(
       already_seen: 0,
       consecutive_failures: -1,
       duration_seconds: 0,
-    });
+    }, null, 2));
   } finally {
     isRunning = false;
   }
