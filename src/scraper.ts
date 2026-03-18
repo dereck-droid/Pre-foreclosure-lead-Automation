@@ -1,4 +1,5 @@
 import { chromium, type Browser, type Page } from 'playwright';
+import { execSync } from 'child_process';
 import path from 'path';
 import { scraper as scraperConfig, paths } from './config.js';
 import { log } from './logger.js';
@@ -11,8 +12,20 @@ import type { Filing } from './database.js';
 
 let browser: Browser | null = null;
 
+/** Kill any orphaned chromium processes left over from previous failed runs. */
+function killOrphanedChromium(): void {
+  try {
+    execSync('pkill -f chrome-headless-shell 2>/dev/null || true', { stdio: 'ignore' });
+  } catch {
+    // pkill may not exist or no processes found — safe to ignore
+  }
+}
+
 export async function launchBrowser(): Promise<Page> {
   log.step(0, 'Launching browser...');
+
+  // Clean up any zombie chromium processes before spawning a new one
+  killOrphanedChromium();
 
   browser = await chromium.launch({
     headless: scraperConfig.headless,
@@ -38,7 +51,12 @@ export async function launchBrowser(): Promise<Page> {
 
 export async function closeBrowser(): Promise<void> {
   if (browser) {
-    await browser.close();
+    try {
+      await browser.close();
+    } catch {
+      // Graceful close failed — force-kill orphaned processes
+      killOrphanedChromium();
+    }
     browser = null;
     log.info('Browser closed');
   }

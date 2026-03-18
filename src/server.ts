@@ -19,6 +19,7 @@
 
 import http from 'http';
 import { runScraper } from './index.js';
+import { closeBrowser } from './scraper.js';
 import { initDatabase, closeDatabase, getFilingCount } from './database.js';
 import { getStats } from './convexLogger.js';
 import { server as serverConfig } from './config.js';
@@ -146,6 +147,15 @@ async function handleScrape(
     jsonResponse(res, statusCode, result);
   } catch (error) {
     // This catches both unexpected errors and scrape timeouts.
+    // On timeout, runScraper() may still be running with an open browser.
+    // Force-close any lingering browser to prevent zombie Chromium processes
+    // from accumulating and exhausting container PID/memory limits (EAGAIN).
+    try {
+      await closeBrowser();
+    } catch {
+      // Browser may already be closed — ignore
+    }
+
     const message = error instanceof Error ? error.message : String(error);
     log.error(`Scrape failed: ${message}`);
     jsonResponse(res, 500, {

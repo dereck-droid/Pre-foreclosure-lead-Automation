@@ -141,9 +141,13 @@ export async function runScraper(date?: string): Promise<ScrapeResult> {
     const durationRounded = Math.round(duration * 10) / 10;
     const dateSearched = date || new Date().toLocaleDateString('en-US');
 
-    // Determine which step failed based on the error message
+    // Determine which step failed based on the error message.
+    // Order matters: check more specific patterns first to avoid false matches
+    // (e.g. "launch" errors contain "search-engine-choice-screen" in the CLI flags).
     let errorStep = 'unknown';
-    if (message.includes('CAPTCHA') || message.includes('captcha') || message.includes('2captcha')) {
+    if (message.includes('EAGAIN') || message.includes('spawn') || message.includes('launch') || message.includes('chromium')) {
+      errorStep = 'browser_launch';
+    } else if (message.includes('CAPTCHA') || message.includes('captcha') || message.includes('2captcha')) {
       errorStep = 'captcha_solving';
     } else if (message.includes('disclaimer') || message.includes('Accept')) {
       errorStep = 'disclaimer_page';
@@ -151,8 +155,6 @@ export async function runScraper(date?: string): Promise<ScrapeResult> {
       errorStep = 'search_form';
     } else if (message.includes('result') || message.includes('scrape')) {
       errorStep = 'results_scraping';
-    } else if (message.includes('browser') || message.includes('Browser') || message.includes('chromium')) {
-      errorStep = 'browser_launch';
     } else if (message.includes('timeout') || message.includes('Timeout')) {
       errorStep = 'timeout';
     }
