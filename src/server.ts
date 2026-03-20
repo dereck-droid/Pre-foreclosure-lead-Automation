@@ -185,15 +185,41 @@ async function runScrapeInBackground(date?: string): Promise<void> {
   }
 }
 
-/** GET /scrape/result — Returns the latest scrape result, or busy status. */
+/** GET /scrape/result — Returns the latest scrape result, or busy status.
+ *  Includes a stale-run safety net: if the scrape has been "running" for longer
+ *  than the configured timeout + 60s buffer, force-clear the lock so the poll
+ *  loop in n8n doesn't spin forever. */
 function handleResult(res: http.ServerResponse): void {
   if (isRunning) {
-    jsonResponse(res, 200, {
-      scraper_busy: true,
-      message: 'Scrape is still running. Poll again in 30 seconds.',
-      started_at: lastRunAt,
-    });
-    return;
+    // Safety net: auto-clear a stale lock if the run has exceeded the timeout
+    const staleLimitMs = serverConfig.scrapeTimeoutMs + 60_000;
+    const elapsed = lastRunAt ? Date.now() - new Date(lastRunAt).getTime() : 0;
+
+    if (elapsed > staleLimitMs) {
+      log.error(`Stale scrape detected (${Math.round(elapsed / 1000)}s). Forcing lock release.`);
+      isRunning = false;
+      if (!lastResult) {
+        lastResult = {
+          success: false,
+          date_searched: new Date().toLocaleDateString('en-US'),
+          total_on_site: 0,
+          new_filings: [],
+          already_seen: 0,
+          consecutive_failures: -1,
+          duration_seconds: Math.round(elapsed / 1000),
+          error: 'Scrape exceeded maximum runtime and was force-cleared',
+          error_step: 'stale_lock_recovery',
+        };
+      }
+    } else {
+      jsonResponse(res, 200, {
+        scraper_busy: true,
+        message: 'Scrape is still running. Poll again in 30 seconds.',
+        started_at: lastRunAt,
+        elapsed_seconds: Math.round(elapsed / 1000),
+      });
+      return;
+    }
   }
 
   if (!lastResult) {
