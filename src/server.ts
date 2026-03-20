@@ -4,15 +4,15 @@
  * A lightweight HTTP server so n8n (or any tool) can trigger scrapes on demand.
  *
  * Endpoints:
- *   GET  /health  — Returns server status + database stats
- *   POST /scrape  — Triggers a scrape. Accepts optional JSON body: { "date": "2/5/2026" }
- *                   Returns scraped filings as JSON (takes 2-3 minutes due to CAPTCHA)
+ *   GET  /health        — Returns server status + database stats
+ *   POST /scrape        — Triggers a scrape (returns 202 immediately)
+ *   GET  /scrape/result — Returns the result of the most recent scrape
  *
- * In n8n:
- *   1. Schedule Trigger node (set your desired frequency)
- *   2. HTTP Request node → POST http://your-server:3000/scrape
- *      - Set timeout to 300 seconds (5 min) to allow for CAPTCHA solving
- *   3. The response contains new_filings[] — loop through and process each one
+ * The /scrape endpoint is async — it accepts the request, starts the scrape in
+ * the background, and returns 202 right away.  n8n should then poll
+ * /scrape/result every ~30s until scraper_busy is false.
+ *
+ * This avoids Railway's HTTP proxy timeout which kills long-running responses.
  *
  * Usage: npm run serve
  */
@@ -24,12 +24,14 @@ import { initDatabase, closeDatabase, getFilingCount } from './database.js';
 import { getStats } from './convexLogger.js';
 import { server as serverConfig } from './config.js';
 import { log } from './logger.js';
+import type { ScrapeResult } from './index.js';
 
 // ---------------------------------------------------------------------------
 // Concurrency lock — only one scrape can run at a time (one browser)
 // ---------------------------------------------------------------------------
 let isRunning = false;
 let lastRunAt: string | null = null;
+let lastResult: ScrapeResult | null = null;
 
 // ---------------------------------------------------------------------------
 // Request body parser
@@ -98,12 +100,8 @@ async function handleHealth(res: http.ServerResponse): Promise<void> {
   }
 }
 
-/** POST /scrape — Trigger a scrape run
- *
- *  Uses chunked transfer encoding with periodic keep-alive newlines so
- *  Railway's edge proxy doesn't kill the idle connection during the 1-2
- *  minute CAPTCHA-solving window.  n8n receives "\n\n\n...{json}" — leading
- *  whitespace is ignored by JSON.parse(). */
+/** POST /scrape — Kick off a scrape in the background, return 202 immediately.
+ *  n8n should poll GET /scrape/result until scraper_busy is false. */
 async function handleScrape(
   req: http.IncomingMessage,
   res: http.ServerResponse
@@ -112,7 +110,7 @@ async function handleScrape(
   if (isRunning) {
     jsonResponse(res, 409, {
       success: false,
-      error: 'A scrape is already in progress. Try again later.',
+      error: 'A scrape is already in progress. Poll GET /scrape/result for status.',
       error_step: 'concurrency_lock',
       scraper_busy: true,
     });
@@ -131,25 +129,23 @@ async function handleScrape(
 
   isRunning = true;
   lastRunAt = new Date().toISOString();
+  lastResult = null;
 
-  // Start the response immediately with chunked encoding so we can send
-  // keep-alive bytes while the scraper runs (prevents proxy idle-timeout).
-  res.writeHead(200, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Transfer-Encoding': 'chunked',
+  // Return 202 immediately — the scrape runs in the background
+  jsonResponse(res, 202, {
+    accepted: true,
+    message: 'Scrape started. Poll GET /scrape/result for the outcome.',
+    scraper_busy: true,
+    started_at: lastRunAt,
   });
 
-  // Send a newline every 15 seconds to keep the connection alive
-  const keepAlive = setInterval(() => {
-    try { res.write('\n'); } catch { /* response may already be closed */ }
-  }, 15_000);
+  // Run the scrape in the background (fire-and-forget from the HTTP perspective)
+  runScrapeInBackground(date);
+}
 
+/** Runs the scraper and stores the result. Called after the 202 is sent. */
+async function runScrapeInBackground(date?: string): Promise<void> {
   try {
-    // Race the scraper against a timeout so the concurrency lock can never get
-    // permanently stuck if the browser hangs (e.g. CAPTCHA never resolves).
     const timeoutMs = serverConfig.scrapeTimeoutMs;
     const result = await Promise.race([
       runScraper(date),
@@ -161,15 +157,9 @@ async function handleScrape(
       ),
     ]);
 
-    clearInterval(keepAlive);
-    res.end(JSON.stringify(result, null, 2));
+    lastResult = result;
   } catch (error) {
-    clearInterval(keepAlive);
-
-    // This catches both unexpected errors and scrape timeouts.
-    // On timeout, runScraper() may still be running with an open browser.
-    // Force-close any lingering browser to prevent zombie Chromium processes
-    // from accumulating and exhausting container PID/memory limits (EAGAIN).
+    // Timeout or unexpected crash — clean up browser
     try {
       await closeBrowser();
     } catch {
@@ -178,20 +168,47 @@ async function handleScrape(
 
     const message = error instanceof Error ? error.message : String(error);
     log.error(`Scrape failed: ${message}`);
-    res.end(JSON.stringify({
+
+    lastResult = {
       success: false,
-      error: message,
-      error_step: 'unexpected_server_error',
       date_searched: date || new Date().toLocaleDateString('en-US'),
       total_on_site: 0,
       new_filings: [],
       already_seen: 0,
       consecutive_failures: -1,
       duration_seconds: 0,
-    }, null, 2));
+      error: message,
+      error_step: 'unexpected_server_error',
+    };
   } finally {
     isRunning = false;
   }
+}
+
+/** GET /scrape/result — Returns the latest scrape result, or busy status. */
+function handleResult(res: http.ServerResponse): void {
+  if (isRunning) {
+    jsonResponse(res, 200, {
+      scraper_busy: true,
+      message: 'Scrape is still running. Poll again in 30 seconds.',
+      started_at: lastRunAt,
+    });
+    return;
+  }
+
+  if (!lastResult) {
+    jsonResponse(res, 200, {
+      scraper_busy: false,
+      message: 'No scrape has been run yet since the server started.',
+      last_run_at: lastRunAt,
+    });
+    return;
+  }
+
+  jsonResponse(res, 200, {
+    scraper_busy: false,
+    ...lastResult,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -216,12 +233,17 @@ const httpServer = http.createServer(async (req, res) => {
     return handleScrape(req, res);
   }
 
+  if (method === 'GET' && url === '/scrape/result') {
+    return handleResult(res);
+  }
+
   // 404 for anything else
   jsonResponse(res, 404, {
     error: 'Not found',
     available_endpoints: {
       'GET /health': 'Server status and database stats',
-      'POST /scrape': 'Trigger a scrape. Optional body: { "date": "2/5/2026" }',
+      'POST /scrape': 'Trigger a scrape (returns 202, runs in background)',
+      'GET /scrape/result': 'Get the result of the latest scrape',
     },
   });
 });
@@ -234,14 +256,15 @@ httpServer.listen(serverConfig.port, () => {
   log.info(`Listening on port ${serverConfig.port}`);
   log.info('');
   log.info('Endpoints:');
-  log.info(`  GET  http://localhost:${serverConfig.port}/health  — Status check`);
-  log.info(`  POST http://localhost:${serverConfig.port}/scrape  — Trigger scrape`);
+  log.info(`  GET  http://localhost:${serverConfig.port}/health         — Status check`);
+  log.info(`  POST http://localhost:${serverConfig.port}/scrape         — Trigger scrape (async)`);
+  log.info(`  GET  http://localhost:${serverConfig.port}/scrape/result  — Poll for result`);
   log.info('');
-  log.info('n8n HTTP Request node settings:');
-  log.info(`  URL:     http://your-server-ip:${serverConfig.port}/scrape`);
-  log.info('  Method:  POST');
-  log.info('  Timeout: 300 seconds (CAPTCHA solving takes 1-3 minutes)');
-  log.info('  Body:    { "date": "2/5/2026" }  (optional — omit for today)');
+  log.info('n8n workflow:');
+  log.info('  1. POST /scrape → receives 202 immediately');
+  log.info('  2. Wait 30s → GET /scrape/result');
+  log.info('  3. If scraper_busy=true, wait 30s and poll again');
+  log.info('  4. If scraper_busy=false, process the result');
   log.info('='.repeat(60));
 });
 
