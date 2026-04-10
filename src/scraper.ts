@@ -12,12 +12,21 @@ import type { Filing } from './database.js';
 
 let browser: Browser | null = null;
 
-/** Kill any orphaned chromium processes left over from previous failed runs. */
+/** Kill any orphaned chromium processes and clean up temp dirs from previous
+ *  failed runs. This is critical on resource-constrained containers (Railway)
+ *  where zombie processes cause EAGAIN / pthread_create failures. */
 function killOrphanedChromium(): void {
-  try {
-    execSync('pkill -f chrome-headless-shell 2>/dev/null || true', { stdio: 'ignore' });
-  } catch {
-    // pkill may not exist or no processes found — safe to ignore
+  const commands = [
+    'pkill -f chrome-headless-shell 2>/dev/null || true',
+    'pkill -f chromium 2>/dev/null || true',
+    'rm -rf /tmp/playwright_* 2>/dev/null || true',
+  ];
+  for (const cmd of commands) {
+    try {
+      execSync(cmd, { stdio: 'ignore' });
+    } catch {
+      // Safe to ignore — process may not exist or command unavailable
+    }
   }
 }
 
@@ -26,6 +35,9 @@ export async function launchBrowser(): Promise<Page> {
 
   // Clean up any zombie chromium processes before spawning a new one
   killOrphanedChromium();
+
+  // Brief pause to let the OS reclaim resources after killing processes
+  await new Promise(resolve => setTimeout(resolve, 1000));
 
   browser = await chromium.launch({
     headless: scraperConfig.headless,

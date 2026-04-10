@@ -231,7 +231,10 @@ function handleResult(res: http.ServerResponse): void {
     return;
   }
 
-  jsonResponse(res, 200, {
+  // Return 500 when the scrape failed so n8n's error branch triggers on the
+  // poll response — not just the initial trigger request.
+  const statusCode = lastResult.success ? 200 : 500;
+  jsonResponse(res, statusCode, {
     scraper_busy: false,
     ...lastResult,
   });
